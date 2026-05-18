@@ -1,0 +1,79 @@
+﻿"Name","Parameters","Body","Folder","DocString"
+"getVPPSiteLevelPerformance","(input_event_name:string="""")","{
+    // let input_event_name = '784fb456-ec22-482b-ade4-54d63ffb4eb7'; //qa
+    // let input_event_name = '466fc501-598d-4b2f-8e44-c1c51488a8c1'; //upcoming stg event
+    // let input_event_name = '3c65fe01-8e8d-4247-a0a7-2f282ab292b4'; //dev ongoing
+    // let input_event_name = '8034b8d5-40e7-41ff-b87a-82572cc80c14'; //qa multiple sites in event
+    // let input_event_name = '0f581111-d157-4e83-9bc7-7c1a6861c428';
+    // let input_event_name = 'd93f4b50-7ab6-4f48-93c0-bf8ff84fcf6a';
+    //
+    let eventInfoBackbone = 
+        silver_stream_dispatch_events
+        | where event_id == input_event_name
+        | summarize arg_max(event_processed_utc_time,sites,dispatch_strategy, event_start_time, event_end_time) by event_id
+        | mv-expand sites
+        | extend siteId = tostring(sites)
+    ;
+    // eventInfoBackbone;
+    let assetReg = 
+        database('EventHouse').getStackedValuesForRelatedModels(inputSiteIds = toscalar(eventInfoBackbone|summarize make_list(sites))
+            ,inputShortModel='dtmi:qcells:user:homeowner'
+            , inputKeys=dynamic(['firstName','lastName'])
+        )
+        | summarize arg_max(ActionTime,*) by siteId, Key
+        | summarize key_value_dict = make_bag(pack(Key, Value)) by siteId, relatedId, ActionTime
+        | evaluate bag_unpack(key_value_dict)
+        | project siteId, customer_name = strcat(column_ifexists('firstName','') , ' ', column_ifexists('lastName',''))
+    ;
+    let siteAssetReg = 
+        database('EventHouse').getStackedValuesForSites(inputSiteIds=toscalar(eventInfoBackbone|summarize make_list(sites)), inputKeys=dynamic(['oemInfo.0.oemName','oemInfo.1.oemName']))
+        | order by siteId, Key
+        | serialize 
+        | extend rn = row_number()
+        | summarize (rn, oemName)=arg_min(rn, Value) by siteId
+        | project-away rn
+    ;
+    // siteAssetReg;
+    let eventData = 
+        getSiteDispatchCommandSummary(inputEventIds =  pack_array(input_event_name))
+        // | where isnotnull(command_start_time_charge) and isnotnull(command_start_time_discharge)
+        | summarize 
+            energy_charged_kWh = sum(overall_command_charge)/1000.0
+            ,energy_discharged_kWh = sum(overall_command_discharge)/1000.0
+            ,energy_exported_kWh = sum(overall_command_exported)/1000.0
+            ,energy_imported_kWh = sum(overall_command_imported)/1000.0
+            ,battery_power = sum(overall_command_battery_power*overall_command_time_seconds)/sum(overall_command_time_seconds)/1000.0
+            ,dispatch_end_time = max(overall_command_end_time)
+            ,dispatch_start_time = min(overall_command_start_time)
+            ,dispatch_windows = make_list(strcat(overall_command_start_time, ' - ', overall_command_end_time))
+        by site_id, event_id, command_type
+        | where tolower(command_type) != 'stop'
+    ;
+    eventInfoBackbone
+    | join kind=leftouter (assetReg) on siteId
+    | join kind=leftouter (siteAssetReg) on siteId
+    | project event_id, site_id = siteId, customer_name, dispatch_strategy, event_start_time, event_end_time, oemName
+    // backbone
+    | join kind = leftouter (eventData) on event_id, site_id
+    | extend display_start_time = coalesce(dispatch_start_time, event_start_time)
+        ,display_end_time = coalesce(dispatch_end_time, event_end_time)
+    | extend packed_site_data = bag_pack_columns(
+        site_id
+        ,customer_name
+        ,oemName
+        ,event_id
+        ,dispatch_strategy
+        ,command_type
+        ,energy_discharged_kWh
+        ,energy_charged_kWh
+        ,energy_exported_kWh
+        ,energy_imported_kWh
+        ,event_start_time
+        ,event_end_time
+        ,dispatch_start_time
+        ,dispatch_end_time
+        ,battery_power
+        )
+    | summarize thelist = make_list(packed_site_data) by event_id
+    | project data = thelist
+}","API Functions","Get site level data for each site in an event"

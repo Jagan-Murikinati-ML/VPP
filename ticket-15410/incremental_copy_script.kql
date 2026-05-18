@@ -1,0 +1,132 @@
+// ============================================================================
+// Ticket #15410: Nightly Incremental Data Copy
+// Source: silverCommDataSite (eventHouse)
+// Target: sqTelemetry (eventhouseVPP)
+// Author: Jagan Murikinati
+// Date: 2026-04-25
+// ============================================================================
+// 
+// PURPOSE:
+// This script copies YESTERDAY's data from silverCommDataSite to sqTelemetry
+// Run nightly at 2 AM to maintain incremental data sync
+// 
+// LOGIC:
+// - Filters data where sourceTimestamp is between yesterday 00:00 and today 00:00
+// - ago(1d) = 24 hours ago
+// - startofday() = start of that day (00:00:00)
+// 
+// EXAMPLE:
+// If today is April 25, 2026 at 2 AM:
+//   - ago(1d) = April 24, 2026 at 2 AM
+//   - startofday(ago(1d)) = April 24, 2026 at 00:00:00
+//   - startofday(now()) = April 25, 2026 at 00:00:00
+//   - Result: Copies all data from April 24
+// 
+// ============================================================================
+
+.set-or-append sqTelemetry <|
+database("eventHouse").silverCommDataSite
+| where sourceTimestamp >= startofday(ago(1d))
+| where sourceTimestamp < startofday(now())
+| project 
+    // Base Fields
+    siteId = siteId,
+    assetId = assetId,
+    oem = oem,
+    sourceTimestamp = sourceTimestamp,
+    
+    // Battery Metrics with NULL Data Labels
+    battery_200_DailyWhExp = battery_200_DailyWhExp,
+    battery_200_DailyWhExp_dl = "",
+    battery_200_DailyWhImp = battery_200_DailyWhImp,
+    battery_200_DailyWhImp_dl = "",
+    battery_200_IncWhExp = battery_200_IncWhExp,
+    battery_200_IncWhExp_dl = "",
+    battery_200_IncWhImp = battery_200_IncWhImp,
+    battery_200_IncWhImp_dl = "",
+    battery_200_TotWhExp = battery_200_TotWhExp,
+    battery_200_TotWhExp_dl = "",
+    battery_200_TotWhImp = battery_200_TotWhImp,
+    battery_200_TotWhImp_dl = "",
+    battery_200_W = battery_200_W,
+    battery_200_W_dl = "",
+    battery_713_SoC = battery_713_SoC,
+    battery_713_SoC_dl = "",
+    battery_713_SoH = battery_713_SoH,
+    battery_713_SoH_dl = "",
+    
+    // Grid Metrics with NULL Data Labels
+    grid_200_DailyWhExp = grid_200_DailyWhExp,
+    grid_200_DailyWhExp_dl = "",
+    grid_200_DailyWhImp = grid_200_DailyWhImp,
+    grid_200_DailyWhImp_dl = "",
+    grid_200_IncWhExp = grid_200_IncWhExp,
+    grid_200_IncWhExp_dl = "",
+    grid_200_IncWhImp = grid_200_IncWhImp,
+    grid_200_IncWhImp_dl = "",
+    grid_200_TotWhExp = grid_200_TotWhExp,
+    grid_200_TotWhExp_dl = "",
+    grid_200_TotWhImp = grid_200_TotWhImp,
+    grid_200_TotWhImp_dl = "",
+    grid_200_W = grid_200_W,
+    grid_200_W_dl = "",
+    
+    // Load Metrics with NULL Data Labels
+    load_200_IncWhExp = load_200_IncWhExp,
+    load_200_IncWhExp_dl = "",
+    load_200_IncWhImp = load_200_IncWhImp,
+    load_200_IncWhImp_dl = "",
+    load_200_TotWhExp = load_200_TotWhExp,
+    load_200_TotWhExp_dl = "",
+    load_200_TotWhImp = load_200_TotWhImp,
+    load_200_TotWhImp_dl = "",
+    load_200_W = load_200_W,
+    load_200_W_dl = "",
+    
+    // PV (Solar) Metrics with NULL Data Labels
+    pv_200_DailyWhExp = pv_200_DailyWhExp,
+    pv_200_DailyWhExp_dl = "",
+    pv_200_IncWhExp = pv_200_IncWhExp,
+    pv_200_IncWhExp_dl = "",
+    pv_200_IncWhImp = pv_200_IncWhImp,
+    pv_200_IncWhImp_dl = "",
+    pv_200_TotWhExp = pv_200_TotWhExp,
+    pv_200_TotWhExp_dl = "",
+    pv_200_TotWhImp = pv_200_TotWhImp,
+    pv_200_TotWhImp_dl = "",
+    pv_200_W = pv_200_W,
+    pv_200_W_dl = ""
+
+// ============================================================================
+// VERIFICATION QUERIES (Run after pipeline executes)
+// ============================================================================
+
+// Check if yesterday's data was copied
+/*
+sqTelemetry
+| where sourceTimestamp >= startofday(ago(1d))
+| where sourceTimestamp < startofday(now())
+| summarize 
+    RowCount = count(),
+    MinTime = min(sourceTimestamp),
+    MaxTime = max(sourceTimestamp),
+    UniqueSites = dcount(siteId),
+    UniqueOEMs = dcount(oem)
+*/
+
+// Check daily data growth over time
+/*
+sqTelemetry
+| summarize RowCount = count() by Day = startofday(sourceTimestamp)
+| order by Day desc
+| take 10
+*/
+
+// Check total table size
+/*
+sqTelemetry
+| summarize TotalRows = count(),
+    EarliestData = min(sourceTimestamp),
+    LatestData = max(sourceTimestamp),
+    DaysOfData = datetime_diff('day', max(sourceTimestamp), min(sourceTimestamp))
+*/

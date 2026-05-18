@@ -1,0 +1,14 @@
+✅ MIGRATION COMPLETED SUCCESSFULLY - Wed Mar 18 16:02:58 UTC 2026
+
+Database: assetdb
+Environment: DEV
+
+Columns Added:
+        table_name        |         column_name         |     data_type     |               column_default               
+--------------------------+-----------------------------+-------------------+--------------------------------------------
+ tb_bas_program_info      | auto_enrollment             | boolean           | false
+ tb_bas_site              | utility_meter_id            | character varying | 
+ tb_bas_site              | utility_meter_serial_number | character varying | 
+ tb_opr_program_site_info | site_owner_authorization    | USER-DEFINED      | 'PENDING'::asset.site_authorization_status
+(4 rows)
+

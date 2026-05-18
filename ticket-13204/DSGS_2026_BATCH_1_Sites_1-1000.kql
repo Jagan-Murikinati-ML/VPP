@@ -1,0 +1,113 @@
+// ============================================================================
+// DSGS 2026 - BATCH 1: Sites 1-1000
+// Date Range: April 1-10, 2026
+// ============================================================================
+
+let testsite = dynamic([]);
+let startTime = datetime(4/1/2026 00:00:00);
+let endTime   = datetime(4/11/2026 00:00:00);
+
+// BATCH 1: First 1000 sites
+let dsgs_site_list = dynamic([
+    "400040232", "400040229", "400037443", "400037435", "400037433", "400037430", "400037425", "400037393", "400037391", "400037389",
+    "400037388", "400037385", "400037373", "400037372", "400037369", "400037351", "400037344", "400037342", "400037340", "400037339",
+    "400037337", "400037331", "400037325", "400037318", "400037315", "400037313", "400037308", "400037293", "400037289", "400037277",
+    "400037274", "400037265", "400037260", "400037258", "400037256", "400037253", "400037250", "400037249", "400037241", "400037237",
+    "400037232", "400037231", "400037224", "400037218", "400037216", "400037215", "400037207", "400037200", "400037198", "400037195",
+    "400037188", "400037179", "400037178", "400037176", "400037161", "400037159", "400037155", "400037148", "400037147", "400037104",
+    "400037032", "400037026", "400037021", "400037020", "400037014", "400037010", "400037006", "400037004", "400037002", "400036999",
+    "400036994", "400036992", "400036991", "400036990", "400036989", "400036987", "400036983", "400036980", "400036973", "400036972",
+    "400036969", "400036964", "400036958", "400036956", "400036951", "400036947", "400036942", "400036934", "400036933", "400036926",
+    "400036922", "400036921", "400036910", "400036899", "400036888", "400036887", "400036886", "400036884", "400036883", "400036882"
+    // TODO: Add sites 101-1000 here (copy from full array lines 20-119)
+]);
+
+// Bad data filter
+let recordsToRemove = 
+    silverCommDataSite
+    | where sourceTimestamp between (datetime(3/25/2026) .. datetime(4/15/2026))
+        and (battery_200_IncWhExp >= 7500 or battery_200_IncWhExp < 0 
+          or battery_200_IncWhImp >= 7500 or battery_200_IncWhImp < 0)
+    | project siteId, sourceTimestamp;
+
+// Time backbone
+let allBins = range bin_base from startTime to endTime step 15m;
+
+// Get meterId from Asset Registry
+let meterId =
+    goldAdtPropertyMinMaxLatestViewV2
+    | where Key == 'meterId' 
+      and ModelId startswith 'dtmi:qcells:contract:leapContract'
+      and tolower(actionMax) != 'delete'
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where tolower(Action) != 'delete'
+        | project siteId = Source, Target
+    ) on $left.Id == $right.Target
+    | distinct meterId = valueMax, siteId
+    | where siteId in (dsgs_site_list)
+    | where (siteId in (testsite) or array_length(testsite) == 0);
+
+// Get telemetry data
+let sites = silverCommDataSite
+    | where siteId in (meterId | project siteId)
+    | where sourceTimestamp between (startTime .. endTime)
+    | join kind=leftanti (recordsToRemove) on siteId, sourceTimestamp
+    | extend normalizedTimestamp = bin(sourceTimestamp, 15m)
+    | extend local_normalizedts = bin((sourceTimestamp - 7h), 15m)
+    | join kind=inner (meterId) on siteId
+    | project siteId, meterId, oem, sourceTimestamp, normalizedTimestamp, 
+              local_normalizedts, battery_200_IncWhImp, battery_200_IncWhExp;
+
+// OEM list
+let oems = materialize(sites | distinct siteId, oem);
+
+// Join and calculate
+let new_bin_base_join = 
+    meterId
+    | extend dummy = 1
+    | join kind = fullouter (allBins | extend dummy = 1) on dummy
+    | project-away dummy, dummy1
+    | join kind = leftouter (sites) on $left.bin_base == $right.normalizedTimestamp and siteId and meterId
+    | project-away siteId1, meterId1
+    | order by siteId, meterId, bin_base asc
+    | serialize
+    | extend energy_consumed_kwh = battery_200_IncWhImp/1000
+        ,energy_generated_kwh = battery_200_IncWhExp/1000
+    | extend energy_net_kwh = energy_consumed_kwh - energy_generated_kwh
+    | extend local_bin = bin_base - 7h
+    | project meter_id = meterId, siteId, oem, sourceTimestamp,
+              local_interval_start_time = coalesce(local_normalizedts, local_bin),
+              local_interval_end_time = coalesce(local_normalizedts + 15m, local_bin + 15m),
+              bin_base, interval_start_time_utc = bin_base,
+              interval_end_time_utc = bin_base + 15m,
+              battery_200_IncWhImp,battery_200_IncWhExp,
+              energy_net_kwh, energy_consumed_kwh, energy_generated_kwh, 
+              final = 'true', region = 'CA'
+    | extend interval_start_time_utc = iif(siteId in (oems | where oem == 'solaredge' | project siteId), interval_start_time_utc - 15m, interval_start_time_utc)
+        ,interval_end_time_utc = iif(siteId in (oems | where oem == 'solaredge' | project siteId), interval_end_time_utc - 15m, interval_end_time_utc);
+
+// Final output
+new_bin_base_join
+| summarize energy_net_kwh = sum(energy_net_kwh), 
+            energy_consumed_kwh = sum(energy_consumed_kwh), 
+            energy_generated_kwh = sum(energy_generated_kwh)
+    ,energy_net_kwh_nulls = iif(countif(isnotnull(energy_net_kwh)) == 0, real(null), sum(energy_net_kwh))
+    ,energy_consumed_kwh_nulls = iif(countif(isnotnull(energy_consumed_kwh)) == 0, real(null), sum(energy_consumed_kwh))
+    ,energy_generated_kwh_nulls = iif(countif(isnotnull(energy_generated_kwh)) == 0, real(null), sum(energy_generated_kwh))
+    by meter_id, interval_start_time_utc, interval_end_time_utc, final, region
+| project meter_id, 
+        interval_start_time_utc = strcat(format_datetime(interval_start_time_utc, "yyyy-MM-dd"), "T", format_datetime(interval_start_time_utc, "HH:mm:ss.ffff"), "Z"),
+        interval_end_time_utc = strcat(format_datetime(interval_end_time_utc, "yyyy-MM-dd"), "T", format_datetime( interval_end_time_utc, "HH:mm:ss.ffff"), "Z"),
+        energy_net_kwh = coalesce(tostring(round(energy_net_kwh_nulls,3)), "Null"),
+        energy_consumed_kwh = coalesce(tostring(round(energy_consumed_kwh_nulls,3)), "Null"),
+        energy_generated_kwh = coalesce(tostring(round(energy_generated_kwh_nulls,3)), "Null"),
+        final = 'true', region = 'CA'
+| order by interval_start_time_utc asc, meter_id asc
+| where interval_start_time_utc != 'TZ' 
+    and interval_start_time_utc != strcat(format_datetime(endTime, "yyyy-MM-dd"), "T", format_datetime( endTime, "HH:mm:ss.ffff"), "Z")
+    and interval_end_time_utc != strcat(format_datetime(startTime, "yyyy-MM-dd"), "T", format_datetime( startTime, "HH:mm:ss.ffff"), "Z")
+
+// Export this to CSV: DSGS_Batch1_April_1-10_2026.csv
+// Then run Batch 2, Batch 3, etc.
+// Combine all CSV files at the end

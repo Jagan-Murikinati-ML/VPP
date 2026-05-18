@@ -1,0 +1,16 @@
+Site Id,Battery Brand,Event Name,Event Id,Dispatch Strategy,Customer Name,Start Time,End Time,Energy Discharged,Energy Exported,Energy Charged,Energy Imported,Battery Power
+110023997,Dersec,Event1-0820-0835,b45c6b33-ff43-4b66-9fb8-359c2c45eb57,-,Suresh Kondeti,-,-,-,-,-,-,-
+110023997,Dersec,Event2-0851-0855,fdf0e836-a75d-4d54-b1e4-15af16ba53dc,-,Suresh Kondeti,-,-,-,-,-,-,-
+110023997,Dersec,Event3-0838-0850,44d6d4b8-7b81-4c8d-9cc0-313143973f6f,-,Suresh Kondeti,-,-,-,-,-,-,-
+400005338,Qcells,Event1-0820-0835,b45c6b33-ff43-4b66-9fb8-359c2c45eb57,charge,ziaus molla,03/18/2026 03:21,03/18/2026 03:35,0 kWh,0 kWh,0 kWh,0 kWh,0 kW
+400002333,Qcells,Event1-0820-0835,b45c6b33-ff43-4b66-9fb8-359c2c45eb57,charge,Patrick Hamel,03/18/2026 03:21,03/18/2026 03:35,0.1 kWh,0 kWh,1.3 kWh,1.6 kWh,-5.63 kW
+400002331,Qcells,Event1-0820-0835,b45c6b33-ff43-4b66-9fb8-359c2c45eb57,charge,Kevin McPhee,03/18/2026 03:21,03/18/2026 03:35,0 kWh,0 kWh,1.6 kWh,2.1 kWh,-7.16 kW
+400005338,Qcells,Event2-0851-0855,fdf0e836-a75d-4d54-b1e4-15af16ba53dc,charge,ziaus molla,03/18/2026 03:52,03/18/2026 03:55,0 kWh,0 kWh,0 kWh,0 kWh,0 kW
+400002333,Qcells,Event2-0851-0855,fdf0e836-a75d-4d54-b1e4-15af16ba53dc,charge,Patrick Hamel,03/18/2026 03:52,03/18/2026 03:55,0 kWh,0 kWh,0.3 kWh,0.3 kWh,-5.61 kW
+400002331,Qcells,Event2-0851-0855,fdf0e836-a75d-4d54-b1e4-15af16ba53dc,charge,Kevin McPhee,03/18/2026 03:52,03/18/2026 03:55,0 kWh,0 kWh,0.4 kWh,0.4 kWh,-7.15 kW
+400005338,Qcells,Event3-0838-0850,44d6d4b8-7b81-4c8d-9cc0-313143973f6f,self consumption,ziaus molla,03/18/2026 03:39,03/18/2026 03:50,0 kWh,0 kWh,0 kWh,0 kWh,0 kW
+400002333,Qcells,Event3-0838-0850,44d6d4b8-7b81-4c8d-9cc0-313143973f6f,self consumption,Patrick Hamel,03/18/2026 03:39,03/18/2026 03:50,0.2 kWh,0 kWh,0 kWh,0.1 kWh,0.92 kW
+400002331,Qcells,Event3-0838-0850,44d6d4b8-7b81-4c8d-9cc0-313143973f6f,self consumption,Kevin McPhee,03/18/2026 03:39,03/18/2026 03:50,0.4 kWh,0 kWh,0 kWh,0 kWh,0.78 kW
+400005226,SolarEdge,Event1-0820-0835,b45c6b33-ff43-4b66-9fb8-359c2c45eb57,charge,Manjit Kaur,03/18/2026 03:21,03/18/2026 03:21,0 kWh,0 kWh,0 kWh,0 kWh,-
+400005226,SolarEdge,Event2-0851-0855,fdf0e836-a75d-4d54-b1e4-15af16ba53dc,charge,Manjit Kaur,03/18/2026 03:52,03/18/2026 03:52,0 kWh,0 kWh,0 kWh,0 kWh,-
+400005226,SolarEdge,Event3-0838-0850,44d6d4b8-7b81-4c8d-9cc0-313143973f6f,-,Manjit Kaur,-,-,-,-,-,-,-

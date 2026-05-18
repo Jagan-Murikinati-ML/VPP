@@ -1,0 +1,3 @@
+﻿"evt_id","evt_start_time","evt_end_time","command","ts_time","energy_charged","energy_discharged","energy_imported","energy_exported","battery_power","aggregate_load","aggregate_pv","sites_participation","missing_power_count"
+"44d6d4b8-7b81-4c8d-9cc0-313143973f6f","2026-03-18 08:38:00.000","2026-03-18 08:50:00.000","","2026-03-18 08:30:00.000","0","200","100","0","1,844","1,757","0","3","1"
+"44d6d4b8-7b81-4c8d-9cc0-313143973f6f","2026-03-18 08:38:00.000","2026-03-18 08:50:00.000","","2026-03-18 08:45:00.000","0","400","100","0","1,546","1,546","0","3","1"

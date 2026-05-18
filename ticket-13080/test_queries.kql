@@ -1,0 +1,205 @@
+// ============================================================================
+// TEST QUERIES - GetSiteTelemetry15Min Function
+// Ticket: 13080
+// Author: Jagan Murikinati
+// Date: 2026-03-31
+// ============================================================================
+
+// ============================================================================
+// STEP 1: VERIFY FUNCTION EXISTS
+// ============================================================================
+
+.show functions | where Name == "GetSiteTelemetry15Min"
+
+// ============================================================================
+// STEP 2: CHECK SAMPLE DATA AVAILABILITY
+// ============================================================================
+
+// Check what sites have data in the sample time range
+database('EventHouse').table('silverCommDataSite')
+| where sourceTimestamp >= datetime(2026-03-05 06:00:00)
+    and sourceTimestamp < datetime(2026-03-05 07:00:00)
+| summarize 
+    min_timestamp = min(sourceTimestamp),
+    max_timestamp = max(sourceTimestamp),
+    record_count = count()
+by siteId
+| order by siteId asc
+
+// ============================================================================
+// TEST 1: BASIC FUNCTIONALITY - Single Site, UTC
+// ============================================================================
+
+GetSiteTelemetry15Min(
+    "Test_Basic",
+    dynamic(["100001646"]),
+    datetime(2026-03-05 06:00:00),  // UTC
+    datetime(2026-03-05 07:00:00),  // UTC (1 hour)
+    "UTC"
+)
+
+// Expected: Up to 4 rows (4 × 15-min intervals)
+// Verify: All intervals between 06:00 and 07:00 UTC
+// Verify: Site_ID = 100001646
+
+// ============================================================================
+// TEST 2: TIMEZONE CONVERSION - Central Timezone
+// ============================================================================
+
+GetSiteTelemetry15Min(
+    "Test_Timezone_Central",
+    dynamic(["100001646"]),
+    datetime(2026-03-05 00:00:00),  // Midnight Central
+    datetime(2026-03-05 01:00:00),  // 1 AM Central
+    "Central"
+)
+
+// Expected: Should query 06:00-07:00 UTC (Central is UTC-6)
+// Verify: Same results as TEST 1
+
+// ============================================================================
+// TEST 3: MULTIPLE SITES
+// ============================================================================
+
+GetSiteTelemetry15Min(
+    "Test_Multiple_Sites",
+    dynamic(["100001646", "100001737", "100000738"]),
+    datetime(2026-03-05 06:00:00),
+    datetime(2026-03-05 06:30:00),  // Just 2 intervals
+    "UTC"
+)
+
+// Expected: Up to 6 rows (3 sites × 2 intervals)
+// Verify: Sites 100001646, 100001737, 100000738 present
+
+// ============================================================================
+// TEST 4: VALIDATE AGGREGATION - Compare with Manual Calculation
+// ============================================================================
+
+// Function output
+GetSiteTelemetry15Min(
+    "Test_Aggregation",
+    dynamic(["100001646"]),
+    datetime(2026-03-05 06:15:00),
+    datetime(2026-03-05 06:30:00),
+    "UTC"
+)
+
+// Manual calculation (for comparison)
+database('EventHouse').table('silverCommDataSite')
+| where siteId == "100001646"
+    and sourceTimestamp >= datetime(2026-03-05 06:15:00)
+    and sourceTimestamp < datetime(2026-03-05 06:30:00)
+| summarize 
+    manual_avg_load_kW = round(avg(load_200_W) / 1000.0, 3),
+    manual_avg_pv_kW = round(avg(pv_200_W) / 1000.0, 3),
+    manual_avg_battery_kW = round(avg(battery_200_W) / 1000.0, 3),
+    manual_avg_soc = round(avg(battery_713_SoC), 2),
+    manual_count = count()
+| extend test_interval = "2026-03-05 06:15:00 - 06:30:00"
+
+// Compare: Function output should match manual calculation
+
+// ============================================================================
+// TEST 5: EDGE CASE - No Data Available
+// ============================================================================
+
+GetSiteTelemetry15Min(
+    "Test_No_Data",
+    dynamic(["999999999"]),  // Non-existent site
+    datetime(2026-03-05 06:00:00),
+    datetime(2026-03-05 07:00:00),
+    "UTC"
+)
+
+// Expected: Empty result set (0 rows)
+// Verify: No errors thrown
+
+// ============================================================================
+// TEST 6: EDGE CASE - Single Data Point
+// ============================================================================
+
+GetSiteTelemetry15Min(
+    "Test_Sparse_Data",
+    dynamic(["100001646"]),
+    datetime(2026-03-05 06:18:00),  // Exact timestamp from sample
+    datetime(2026-03-05 06:19:00),  // Just 1 minute window
+    "UTC"
+)
+
+// Expected: 1 row for the 06:15-06:30 interval
+// Verify: Reading_Count = 1
+
+// ============================================================================
+// TEST 7: VALIDATE OUTPUT SCHEMA
+// ============================================================================
+
+GetSiteTelemetry15Min(
+    "Test_Schema",
+    dynamic(["100001646"]),
+    datetime(2026-03-05 06:00:00),
+    datetime(2026-03-05 07:00:00),
+    "UTC"
+)
+| getschema
+
+// Expected columns:
+// - Site_ID (string)
+// - Interval_Start_UTC (datetime)
+// - Interval_End_UTC (datetime)
+// - Site_Load_kW (real)
+// - PV_Generation_kW (real)
+// - Battery_Power_kW (real)
+// - Battery_SoC_Percent (real)
+// - Reading_Count (long)
+
+// ============================================================================
+// TEST 8: TIMEZONE - Pacific
+// ============================================================================
+
+GetSiteTelemetry15Min(
+    "Test_Timezone_Pacific",
+    dynamic(["100001646"]),
+    datetime(2026-03-04 22:00:00),  // 10 PM Pacific (previous day)
+    datetime(2026-03-04 23:00:00),  // 11 PM Pacific
+    "Pacific"
+)
+
+// Expected: Should query 06:00-07:00 UTC (Pacific is UTC-8)
+// Verify: Same results as TEST 1
+
+// ============================================================================
+// TEST 9: TIMEZONE - IST (Half-hour offset)
+// ============================================================================
+
+GetSiteTelemetry15Min(
+    "Test_Timezone_IST",
+    dynamic(["100001646"]),
+    datetime(2026-03-05 11:30:00),  // 11:30 AM IST
+    datetime(2026-03-05 12:30:00),  // 12:30 PM IST
+    "IST"
+)
+
+// Expected: Should query 06:00-07:00 UTC (IST is UTC+5:30)
+// Verify: Same results as TEST 1
+
+// ============================================================================
+// TEST 10: PERFORMANCE - Larger Query
+// ============================================================================
+
+GetSiteTelemetry15Min(
+    "Test_Performance",
+    dynamic(["100001646", "100001737", "100000738", "100001586", "100001574"]),
+    datetime(2026-03-05 06:00:00),
+    datetime(2026-03-05 12:00:00),  // 6 hours = 24 intervals
+    "UTC"
+)
+
+// Expected: Up to 120 rows (5 sites × 24 intervals)
+// Verify: Query completes within reasonable time
+// Verify: Results ordered by Site_ID, then Interval_Start_UTC
+
+// ============================================================================
+// END OF TESTS
+// ============================================================================
+

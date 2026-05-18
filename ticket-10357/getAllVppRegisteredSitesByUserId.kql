@@ -1,0 +1,105 @@
+{
+    // let inputUserId = '971bceba-40d0-f011-8543-002248098e5f'; //all dev
+    // let inputUserId = 'badInputUser';
+    // let inputUserId = '832e6c90-b447-f011-877a-6045bd0204c6';//all prod
+    // let inputStateCode = 'noStateInput';
+    // let inputStateCode = 'CA';
+    // let inputUtilities = 'noUtilityInput';
+    // let inputUtilities = 'CENTERPOINT_ENERGY_HOUSTON_ELECTRIC_LLC,PACIFIC_GAS_ELECTRIC_CO';
+    // let page_size = 1000;
+    // let page = 0;
+    //
+    // test inputs above. function starts below
+    let utilitiesList = split(inputUtilities,','); 
+    // print utilitiesList[0];
+    let site_ids_from_user = toscalar(getCurrentUserSiteMapping(inputUserId) | project list_site_ids);
+    let vppSites = 
+            goldAdtPropertyMinMaxLatestViewV2 
+            | where Id in (site_ids_from_user)
+            | where Key == 'isVppRegistered' and tolower(valueMax) == 'true'
+            | join kind=inner (goldAdtTwinEventsLatestV2 | where Action != 'Delete') on $left.Id == $right.TwinId
+    ;
+    // vppSites;
+    let vppSiteInfo = 
+            goldAdtPropertyMinMaxLatestViewV2
+            | where Id in (vppSites | project Id) 
+                and (Key contains "oemName" or Key in (dynamic(['address.stateProvince','utilityName','address.zipPostalCode','loadZone'])))
+            // | summarize key_value_dict = make_bag(pack(Key, valueMax)) by siteId = Id
+            // | evaluate bag_unpack(key_value_dict)
+            | summarize 
+                state = take_anyif(valueMax, Key == 'address.stateProvince')
+                ,utilityName = take_anyif(valueMax, Key == 'utilityName')
+                ,zipCode = take_anyif(valueMax, Key == 'address.zipPostalCode')
+                ,loadZone = take_anyif(valueMax, Key == 'loadZone')
+                ,oem = coalesce(take_anyif(valueMax, Key == 'oemInfo.2.oemName'),take_anyif(valueMax, Key == 'oemInfo.1.oemName'),take_anyif(valueMax, Key == 'oemInfo.0.oemName'),take_anyif(valueMax, Key == 'oemInfo.oemName'))
+            by siteId = Id
+            | where (state == inputStateCode or inputStateCode == 'noStateInput')
+                 and (utilityName in (utilitiesList) or utilitiesList[0] == 'noUtilityInput' )
+            | order by siteId asc
+            | extend rnum = row_number()-1
+            | extend pgnum = rnum/page_size
+    ;
+    // vppSiteInfo;
+    let battery_capacity = 
+        goldAdtPropertyMinMaxLatestViewV2
+        | where actionMax != 'Delete' 
+            and (ModelId startswith 'dtmi:qcells:device:inverter'or ModelId startswith 'dtmi:qcells:device:batt')
+            and Key in ('nameplateInfo.wMaxRtg','productInfo.prodSubType','productInfo.prodType')
+        | join kind = inner (
+            goldAdtAllRelationshipsLatestView
+            | where 
+            // Source in (sitetestlist) and 
+                Target in (
+                    goldAdtTwinEventsLatestV2 
+                    | where Action != 'Delete' and (ModelId startswith 'dtmi:qcells:device:inverter' or ModelId startswith 'dtmi:qcells:device:batt')
+                )
+                and Action != 'Delete'
+            | project siteId = Source, targetId = Target
+        ) on $left.Id == $right.targetId
+        | summarize 
+            wMaxRtg = take_anyif(valueMax, Key == 'nameplateInfo.wMaxRtg')
+            ,prodSubType = take_anyif(valueMax, Key == 'productInfo.prodSubType')
+            ,prodType = take_anyif(valueMax, Key == 'productInfo.prodType')
+        by siteId, targetId, ModelId
+        // logic is to pick the inverter rating with priority of batteryinv, hybridinv, or inv, and then take that 1 value and compare to battery rating, and pick the min of the 2
+        | where prodSubType != 'PVInverter'
+            and (
+                (ModelId startswith "dtmi:qcells:device:inverter" and prodSubType in ('BatteryInverter','HybridInverter')) //same definitions as getVppSiteListView
+                or (ModelId startswith "dtmi:qcells:device:inverter" and prodType == 'Inverter')
+                or (ModelId startswith "dtmi:qcells:device:battery" and prodType == 'Battery')
+            )
+        // logic of picking order happens to align with alphabetical order of battinv, hybridinv, inv, all of which are modelId inverter
+        | extend inverterType = coalesce(prodSubType,prodType), wMaxRtg = toint(wMaxRtg)
+        | summarize arg_min(wMaxRtg,*) by siteId, ModelId, inverterType, prodSubType, prodType
+        | summarize 
+            (inverterType, inverterRating) = arg_min(inverterType, wMaxRtg)
+        by siteId, ModelId
+        | summarize rated_capacity = min(inverterRating) by siteId
+    ;
+    // battery_capacity;
+    let result_data = 
+        vppSiteInfo
+        | where pgnum == page
+        | join kind=leftouter (battery_capacity) on siteId
+        | extend data = pack(
+            'siteId', siteId
+            ,'oem' , oem
+            ,'state', state
+            ,'utility', utilityName
+            ,'zip_code', zipCode
+            ,'load_zone', loadZone
+            ,'battery_capacity', rated_capacity
+        )
+    ;
+    // result_data;
+    // Step 9: Wrap up the results with pagination metadata
+    let data_value = result_data | summarize data = make_list(data);
+    // let page_count = toscalar(result_data | summarize count = count_distinct(siteId));
+    let total_count = toscalar(vppSiteInfo | summarize count = count_distinct(siteId));
+    let pagination_metadata = pack('pagination', pack('page', page, 'page_size', toscalar(result_data | summarize count = count_distinct(siteId)), 'total_count', total_count));
+    let status = iff(total_count == 0, 404, 200)
+    ;
+    data_value
+    | extend metadata = pagination_metadata, status = status
+    | project metadata, data, status
+}

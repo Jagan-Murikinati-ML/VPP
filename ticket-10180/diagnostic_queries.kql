@@ -1,0 +1,148 @@
+// ============================================================================
+// TICKET 10180: Diagnostic Queries for DSGS Empty Array Issue
+// Bug: MWh Exports widget returning empty array for DSGS program
+// Function: getVPPExportSummaryByProgram
+// ============================================================================
+
+// ============================================================================
+// QUERY 1: Check if DSGS program exists in silver_stream_dispatch_events
+// ============================================================================
+
+silver_stream_dispatch_events
+| summarize arg_max(event_processed_utc_time, *) by event_id
+| where program_name == "DSGS"
+| summarize
+    total_events = count(),
+    min_event_start_time = min(event_start_time),
+    max_event_start_time = max(event_start_time),
+    min_event_end_time = min(event_end_time),
+    max_event_end_time = max(event_end_time),
+    sample_event_ids = make_list(event_id, 5)
+| project
+    program_name = "DSGS",
+    total_events,
+    event_start_range = strcat(min_event_start_time, " to ", max_event_start_time),
+    event_end_range = strcat(min_event_end_time, " to ", max_event_end_time),
+    sample_event_ids
+
+// Expected: Should show count of DSGS events
+// If 0 → No DSGS events exist at all
+// If >0 → Events exist, move to Query 2
+
+// ============================================================================
+// QUERY 2: Check if DSGS events have data in silver_dispatch_summary
+// ============================================================================
+
+let dsgs_event_ids = 
+    silver_stream_dispatch_events
+    | summarize arg_max(event_processed_utc_time, *) by event_id
+    | where program_name == "DSGS"
+    | project event_id
+;
+silver_dispatch_summary
+| summarize arg_max(ts_time, *) by event_id
+| where event_id in (dsgs_event_ids)
+| summarize 
+    events_with_summary = count(),
+    total_energy_exported = sum(energy_exported),
+    sample_event_ids = make_list(event_id, 5)
+
+// Expected: Should show DSGS events in dispatch summary
+// If 0 → No dispatch summary data for DSGS (THIS IS THE PROBLEM!)
+// If >0 → Data exists, issue is elsewhere
+
+// ============================================================================
+// QUERY 3: Compare DSGS vs Other Programs
+// ============================================================================
+
+let events_by_program = 
+    silver_stream_dispatch_events
+    | summarize arg_max(event_processed_utc_time, *) by event_id
+    | summarize events_in_stream = count() by program_name
+;
+let summary_by_program = 
+    silver_stream_dispatch_events
+    | summarize arg_max(event_processed_utc_time, *) by event_id
+    | join kind = inner (
+        silver_dispatch_summary
+        | summarize arg_max(ts_time, *) by event_id
+    ) on event_id
+    | summarize 
+        events_in_summary = count(),
+        total_energy_exported = sum(energy_exported)
+    by program_name
+;
+events_by_program
+| join kind = leftouter (summary_by_program) on program_name
+| extend 
+    events_in_summary = iff(isnull(events_in_summary), 0, events_in_summary),
+    total_energy_exported = iff(isnull(total_energy_exported), 0.0, total_energy_exported)
+| extend missing_events = events_in_stream - events_in_summary
+| project 
+    program_name,
+    events_in_stream,
+    events_in_summary,
+    missing_events,
+    total_energy_exported_kwh = round(total_energy_exported, 2),
+    data_completeness_pct = round((toreal(events_in_summary) / toreal(events_in_stream)) * 100, 1)
+| order by program_name asc
+
+// Expected: Shows which programs have missing dispatch summary data
+// Look for DSGS row with missing_events > 0
+
+// ============================================================================
+// QUERY 4: Sample DSGS Event Details
+// ============================================================================
+
+silver_stream_dispatch_events
+| summarize arg_max(event_processed_utc_time, *) by event_id
+| where program_name == "DSGS"
+| take 5
+| project 
+    event_id,
+    event_start_time,
+    event_end_time,
+    event_status,
+    sites,
+    program_name
+
+// Expected: Shows sample DSGS events
+// Use event_id from this to run getVPPDispatchSummary manually
+
+// ============================================================================
+// QUERY 5: Check if getVPPDispatchSummary works for DSGS events
+// ============================================================================
+
+// Get a sample DSGS event ID first from Query 4
+// Then run:
+// getVPPDispatchSummary("<event_id_from_query_4>")
+
+// If this returns data → Issue is with aggregation in getVPPExportSummaryByProgram
+// If this returns empty → Issue is with dispatch summary generation
+
+// ============================================================================
+// QUERY 6: Check raw telemetry data for DSGS sites
+// ============================================================================
+
+// First get DSGS sites from an event
+let dsgs_sites = toscalar(
+    silver_stream_dispatch_events
+    | summarize arg_max(event_processed_utc_time, *) by event_id
+    | where program_name == "DSGS"
+    | take 1
+    | extend sites_array = parse_json(sites)
+    | project sites_array
+);
+// Check if these sites have telemetry data
+database('EventHouse').table('silverCommDataSite')
+| where siteId in (dsgs_sites)
+| summarize 
+    min_timestamp = min(sourceTimestamp),
+    max_timestamp = max(sourceTimestamp),
+    record_count = count()
+by siteId
+| order by siteId asc
+
+// Expected: Shows if DSGS sites have telemetry data
+// If no data → Sites aren't reporting to silverCommDataSite
+

@@ -1,0 +1,2 @@
+﻿"site_id","event_id","command_type","overall_command_start_time","overall_command_end_time","overall_command_discharge","overall_command_charge","overall_command_exported","overall_command_imported","overall_command_time_seconds","command_start_time_discharge","command_end_time_discharge"
+"400000837","ca0c0d89-614d-4358-b31f-2cb27a29cf5f","discharge","2026-05-12 07:17:11.000","2026-05-12 07:17:11.000","230","0","217","0","0","230","230"

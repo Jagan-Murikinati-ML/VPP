@@ -1,0 +1,136 @@
+// ============================================================================
+// Function: GetSiteTelemetryByProgram15Min
+// Purpose: Fetch site telemetry data for a program within a time range
+//          Returns data aggregated in 15-minute intervals
+// ============================================================================
+
+.create-or-alter function GetSiteTelemetryByProgram15Min(
+    programName: string,            // Program name (for logging/reference)
+    siteList: dynamic,              // Array of site IDs: dynamic(["100001646", "100001737"])
+    startTime: datetime,            // Start time in PROGRAM timezone
+    endTime: datetime,              // End time in PROGRAM timezone
+    timeZone: string                // Timezone: "Central", "Pacific", "IST", etc.
+)
+{
+    // ========================================================================
+    // STEP 1: CONVERT PROGRAM TIMEZONE TO UTC
+    // ========================================================================
+    let timezone_offset = case(
+        // US Timezones (Standard Time)
+        timeZone == "Central" or timeZone == "America/Chicago" or timeZone == "CST", -6h,
+        timeZone == "Eastern" or timeZone == "America/New_York" or timeZone == "EST", -5h,
+        timeZone == "Pacific" or timeZone == "America/Los_Angeles" or timeZone == "PST", -8h,
+        timeZone == "Mountain" or timeZone == "America/Denver" or timeZone == "MST", -7h,
+        // International Timezones (IST has 30-min offset)
+        timeZone == "IST" or timeZone == "Asia/Kolkata", 5h + 30m,
+        timeZone == "UTC" or timeZone == "GMT", 0h,
+        0h  // Default: no conversion
+    );
+    // Convert to UTC: LocalTime - Offset = UTC
+    // Example: 06:00 Central (UTC-6) → 06:00 - (-6h) = 12:00 UTC
+    let utcStartTime = startTime - timezone_offset;
+    let utcEndTime = endTime - timezone_offset;
+    // ========================================================================
+    // STEP 2: QUERY SILVERCOMMDATASITE TABLE
+    // ========================================================================
+    database('EventHouse').table('silverCommDataSite')
+    | where sourceTimestamp >= utcStartTime
+        and sourceTimestamp < utcEndTime
+        and siteId in (siteList)
+    // ========================================================================
+    // STEP 3: BIN INTO 15-MINUTE INTERVALS
+    // ========================================================================
+    | extend Interval_Start_UTC = bin(sourceTimestamp, 15m)
+    | extend Interval_End_UTC = Interval_Start_UTC + 15m
+    // ========================================================================
+    // STEP 4: AGGREGATE USING AVG() PER API ROLLUP=AVG PATTERN
+    // ========================================================================
+    | summarize
+        // Average instantaneous power (Watts) across all readings in interval
+        avg_load_w = avg(load_200_W),
+        avg_pv_w = avg(pv_200_W),
+        avg_battery_w = avg(battery_200_W),
+        // Get LATEST SoC value in interval (confirmed by Naveen)
+        // arg_max returns: (max_timestamp, battery_713_SoC_value)
+        latest_soc_raw = arg_max(sourceTimestamp, battery_713_SoC).battery_713_SoC,
+        // Count readings in interval (for data quality check)
+        Reading_Count = count()
+    by siteId, Interval_Start_UTC, Interval_End_UTC
+    // ========================================================================
+    // STEP 5: CONVERT UNITS (WATTS → KILOWATTS) AND HANDLE NULLS
+    // ========================================================================
+    | extend
+        Site_Load_kW = iff(isnull(avg_load_w), real(null), round(avg_load_w / 1000.0, 3)),
+        PV_Generation_kW = iff(isnull(avg_pv_w), real(null), round(avg_pv_w / 1000.0, 3)),
+        Battery_Power_kW = iff(isnull(avg_battery_w), real(null), round(avg_battery_w / 1000.0, 3)),
+        Battery_SoC_Percent = iff(isnull(latest_soc_raw) or isempty(latest_soc_raw), real(null), round(toreal(latest_soc_raw), 2))
+    // ========================================================================
+    // STEP 6: FORMAT OUTPUT
+    // ========================================================================
+    | project
+        Site_ID = siteId,
+        Interval_Start_UTC,
+        Interval_End_UTC,
+        Site_Load_kW,
+        PV_Generation_kW,
+        Battery_Power_kW,
+        Battery_SoC_Percent,
+        Reading_Count
+    | order by Site_ID asc, Interval_Start_UTC asc
+}
+
+// ============================================================================
+// USAGE EXAMPLES
+// ============================================================================
+
+// Example 1: Query 2 hours of data for Central timezone program
+// GetSiteTelemetryByProgram15Min(
+//     "IL",
+//     dynamic(["100001646", "100001737"]),
+//     datetime("2026-03-05 06:00:00"),  // 6 AM Central
+//     datetime("2026-03-05 08:00:00"),  // 8 AM Central
+//     "Central"
+// )
+
+// Example 2: Query 1 hour for Pacific timezone
+// GetSiteTelemetryByProgram15Min(
+//     "California",
+//     dynamic(["100001646"]),
+//     datetime("2026-03-05 09:00:00"),  // 9 AM Pacific
+//     datetime("2026-03-05 10:00:00"),  // 10 AM Pacific
+//     "America/Los_Angeles"
+// )
+
+// Example 3: Query in UTC (no conversion)
+// GetSiteTelemetryByProgram15Min(
+//     "Test",
+//     dynamic(["100001646"]),
+//     datetime("2026-03-05 06:00:00"),  // Already UTC
+//     datetime("2026-03-05 07:00:00"),  // Already UTC
+//     "UTC"
+// )
+
+
+
+// ============================================================================
+// NOTES AND REQUIREMENTS
+// ============================================================================
+// CONFIRMED REQUIREMENTS:
+// 1. Input timestamps in PROGRAM timezone (confirmed by Ayub)
+// 2. Uses avg() for power metrics to match API rollup=avg (per Ayub's API reference)
+// 3. Uses LATEST SoC value in each interval (confirmed by Naveen)
+// 4. Columns: load_200_W, pv_200_W, battery_200_W, battery_713_SoC
+//
+// PENDING CLARIFICATION:
+// 1. Battery Power sign convention (positive = discharge or charge?)
+// 2. Site Load sign convention (positive = consumption or export?)
+// 3. Battery Power calculation (net or discharge only?)
+// 4. Site Load calculation (net or export only?)
+//
+// TECHNICAL DETAILS:
+// - Output times in UTC
+// - Missing intervals will not appear in output
+// - Reading_Count shows data quality (expect ~3 readings per 15-min)
+// - DST not handled (uses standard time offsets)
+// ============================================================================
+

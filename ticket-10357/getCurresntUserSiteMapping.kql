@@ -1,0 +1,11 @@
+{
+    silverUserEvents
+    | where user_id == inputUserId
+    | join kind=inner (goldUserGroupToUserMapping | where isingroup > 0) on $left.user_id == $right.user_ids
+    | join kind=inner(goldUserGroupToResourceGroupMapping | where isingroup > 0) on $left.user_group_id == $right.user_group_id
+    | join kind=inner(goldResourceGroupToSiteMapping | where isingroup > 0) on $left.resource_group_ids == $right.resource_group_id
+    //| join kind=inner (ValidPropertyViewV2 | where ModelId startswith "dtmi:qcells:site:site" | distinct Id) on $left.site_ids == $right.Id
+    | join kind=inner goldAdtPropertySites on $left.site_ids == $right.siteId
+    | distinct user_id, site_ids
+    | summarize make_list(site_ids) by user_id
+}

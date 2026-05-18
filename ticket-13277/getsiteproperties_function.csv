@@ -1,0 +1,26 @@
+﻿"Name","Parameters","Body","Folder","DocString"
+"GetSiteProperties","(siteIds:dynamic)","{
+// let siteIds=dynamic(['400000020','144710000','400000004']); //int
+// let siteIds=dynamic(['400000020','100000538','100000537']); //dev
+    goldAdtTwinEventsLatest
+    | where TwinId in (siteIds)
+    | where Action != 'Delete'
+    | join kind=inner (
+        goldAdtPropertyMinMaxLatestViewV2
+        | where Id in (siteIds) and ModelId startswith ""dtmi:qcells:site:site""
+        | extend PropertyGroup = split(Key,""."")[0], PropertyKey1 = split(Key,""."")[1], PropertyKey2 = split(Key,""."")[2]
+        | extend PropertyKey = substring(Key, strlen(PropertyGroup)+1)
+        | extend thebag = bag_pack(PropertyKey, iif(Key == 'commonInfo.createDate', valueMin, valueMax))
+        | summarize dict = make_bag_if(thebag, array_length(bag_keys(thebag))>0), max(valueMax) by Id, ModelId, tostring(PropertyGroup)
+        | project Id, ModelId, Property = PropertyGroup, ParsedValue = iff( array_length( bag_keys(dict)) == 0, max_valueMax, dict)
+    ) on $left.TwinId == $right.Id
+    | summarize
+        twinDisplayName = anyif(tostring(ParsedValue), Property == 'twinDisplayName'),
+        siteId = anyif(tostring(ParsedValue), Property == 'siteId'),
+        address = anyif(todynamic(ParsedValue), Property == 'address'),
+        commonInfo = anyif(todynamic(ParsedValue), Property == 'commonInfo'),
+        oemInfo = anyif(todynamic(ParsedValue), Property == 'oemInfo'),
+        assetRegistrationInfo = anyif(todynamic(ParsedValue), Property == 'assetRegistrationInfo'), 
+        otherProperties = make_bag_if(pack(Property, ParsedValue), Property !in ('twinDisplayName', 'siteId', 'address', 'commonInfo', 'oemInfo','assetRegistrationInfo'))
+    by Id
+}","Helper Functions","Fetch Site Properties for Site IDs"

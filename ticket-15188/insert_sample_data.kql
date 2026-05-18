@@ -1,0 +1,102 @@
+// ============================================================================
+// Ticket 15188: Insert Sample Data (April 1, 2026) into sqTelemetry
+// Author: Jagan Murikinati
+// Date: 2026-04-20
+// Source Database: eventhouse (silverCommDataSite)
+// Target Database: eventhouseVPP (sqTelemetry)
+// ============================================================================
+
+// IMPORTANT: Make sure you're connected to eventhouseVPP database when running this!
+
+.set-or-append sqTelemetry <|
+database("eventHouse").silverCommDataSite
+| where sourceTimestamp >= datetime(2026-04-01 00:00:00)
+| where sourceTimestamp < datetime(2026-04-02 00:00:00)
+| project 
+    // Base Fields
+    siteId = siteId,
+    assetId = assetId,
+    oem = oem,
+    sourceTimestamp = sourceTimestamp,
+    
+    // Battery Metrics with Data Labels
+    battery_200_DailyWhExp = todouble(battery_200_DailyWhExp),
+    battery_200_DailyWhExp_dl = "VALID",
+    battery_200_DailyWhImp = todouble(battery_200_DailyWhImp),
+    battery_200_DailyWhImp_dl = "VALID",
+    battery_200_IncWhExp = todouble(battery_200_IncWhExp),
+    battery_200_IncWhExp_dl = "VALID",
+    battery_200_IncWhImp = todouble(battery_200_IncWhImp),
+    battery_200_IncWhImp_dl = "VALID",
+    battery_200_TotWhExp = todouble(battery_200_TotWhExp),
+    battery_200_TotWhExp_dl = "VALID",
+    battery_200_TotWhImp = todouble(battery_200_TotWhImp),
+    battery_200_TotWhImp_dl = "VALID",
+    battery_200_W = todouble(battery_200_W),
+    battery_200_W_dl = "VALID",
+    battery_713_SoC = todouble(battery_713_SoC),
+    battery_713_SoC_dl = "VALID",
+    battery_713_SoH = todouble(battery_713_SoH),
+    battery_713_SoH_dl = "VALID",
+    
+    // Grid Metrics with Data Labels
+    grid_200_DailyWhExp = todouble(grid_200_DailyWhExp),
+    grid_200_DailyWhExp_dl = "VALID",
+    grid_200_DailyWhImp = todouble(grid_200_DailyWhImp),
+    grid_200_DailyWhImp_dl = "VALID",
+    grid_200_IncWhExp = todouble(grid_200_IncWhExp),
+    grid_200_IncWhExp_dl = "VALID",
+    grid_200_IncWhImp = todouble(grid_200_IncWhImp),
+    grid_200_IncWhImp_dl = "VALID",
+    grid_200_TotWhExp = todouble(grid_200_TotWhExp),
+    grid_200_TotWhExp_dl = "VALID",
+    grid_200_TotWhImp = todouble(grid_200_TotWhImp),
+    grid_200_TotWhImp_dl = "VALID",
+    grid_200_W = todouble(grid_200_W),
+    grid_200_W_dl = "VALID",
+    
+    // Load Metrics with Data Labels
+    load_200_IncWhExp = todouble(load_200_IncWhExp),
+    load_200_IncWhExp_dl = "VALID",
+    load_200_IncWhImp = todouble(load_200_IncWhImp),
+    load_200_IncWhImp_dl = "VALID",
+    load_200_TotWhExp = todouble(load_200_TotWhExp),
+    load_200_TotWhExp_dl = "VALID",
+    load_200_TotWhImp = todouble(load_200_TotWhImp),
+    load_200_TotWhImp_dl = "VALID",
+    load_200_W = todouble(load_200_W),
+    load_200_W_dl = "VALID",
+    
+    // PV Metrics with Data Labels
+    pv_200_DailyWhExp = todouble(pv_200_DailyWhExp),
+    pv_200_DailyWhExp_dl = "VALID",
+    pv_200_IncWhExp = todouble(pv_200_IncWhExp),
+    pv_200_IncWhExp_dl = "VALID",
+    pv_200_IncWhImp = todouble(pv_200_IncWhImp),
+    pv_200_IncWhImp_dl = "VALID",
+    pv_200_TotWhExp = todouble(pv_200_TotWhExp),
+    pv_200_TotWhExp_dl = "VALID",
+    pv_200_TotWhImp = todouble(pv_200_TotWhImp),
+    pv_200_TotWhImp_dl = "VALID",
+    pv_200_W = todouble(pv_200_W),
+    pv_200_W_dl = "VALID";
+
+// ============================================================================
+// VERIFICATION
+// ============================================================================
+
+// Check row count
+sqTelemetry
+| count
+
+// Check date range
+sqTelemetry
+| summarize 
+    MinTimestamp = min(sourceTimestamp),
+    MaxTimestamp = max(sourceTimestamp),
+    RowCount = count(),
+    UniqueSites = dcount(siteId)
+
+// View sample data
+sqTelemetry
+| take 10

@@ -1,0 +1,76 @@
+﻿"Name","Parameters","Body","Folder","DocString"
+"getSiteDispatchCommandSummary","(inputEventIds:dynamic=dynamic([]), inputSiteIds:dynamic=dynamic([]))","{
+    // let inputEventIds = dynamic(['fd9f3eb5-5690-4cc5-a9ac-ebe0f89f3131','dc01ae1d-3f9c-4fb2-94d2-4843b7de956e','b30ff720-ab4e-40de-a100-3fae995e1897']);
+    // let inputSiteIds = dynamic([]);
+    //
+    // input test variables above this line. function starts below
+    getMultipleEventsSiteDispatchResults(inputEventIds, inputSiteIds)
+    | where (event_id in (inputEventIds) or array_length(inputEventIds)==0) 
+        and (site_id in (inputSiteIds) or array_length(inputSiteIds)==0)
+        // and dispatch_status_code == 200
+    | extend command = toupper(command)
+        ,energy_imported = cu_grid_200_IncWhImp
+        ,energy_exported = cu_grid_200_IncWhExp
+        ,energy_charged = cu_battery_200_IncWhImp
+        ,energy_discharged = cu_battery_200_IncWhExp
+        ,battery_power = battery_200_W
+    | extend command_type = 
+        case(
+            toupper(command) == 'DISCHARGE_TO_HOME_AND_GRID' or toupper(command) == 'DISCHARGE_TO_LOAD_GRID', 'discharge' 
+            ,toupper(command) == 'SELF_CONSUMPTION', 'self_consumption'
+            ,toupper(command) == 'CHARGE_FROM_SOLAR' or toupper(command) == 'CHARGE_FROM_GRID_AND_SOLAR' or toupper(command) == 'CHARGE_FROM_PV_GRID', 'charge'
+            ,toupper(command) == 'STOPDISPATCHCOMMANDDTO', 'stop'
+            ,toupper(command) == '', 'unknown command'
+            ,tolower(command)
+        )
+    | order by event_id, site_id, dispatch_time asc, command, energy_imported asc, energy_exported asc, energy_charged asc, energy_discharged asc, battery_power asc
+    | serialize rn = row_number()
+    // | where command_type != 'ignoreme'
+    | extend command_group_id = row_cumsum(
+            iif(event_id != prev(event_id, 1) or site_id != prev(site_id, 1) or command != prev(command, 1) , 1, 0)
+            ,   event_id != prev(event_id, 1) or site_id != prev(site_id, 1)
+        )
+        ,command_type_group_id = row_cumsum(
+            iif(event_id != prev(event_id, 1) or site_id != prev(site_id, 1) or command_type != prev(command_type, 1), 1, 0)
+            ,   event_id != prev(event_id, 1) or site_id != prev(site_id, 1)
+        )
+    | summarize (command_start_time, command_start_time_discharge, command_start_time_charge, command_start_time_imported, command_start_time_exported, command_start_time_battery_power)
+            = arg_min(dispatch_time, energy_discharged, energy_charged, energy_imported, energy_exported, battery_power)
+            ,(command_end_time, command_end_time_discharge, command_end_time_charge, command_end_time_imported, command_end_time_exported, command_end_time_battery_power)
+            = arg_max(dispatch_time, energy_discharged, energy_charged, energy_imported, energy_exported, battery_power)
+            ,command_battery_power_sum = sum(battery_power)
+    by site_id, event_id, command_group_id, command, command_type_group_id, command_type
+    | join kind=leftouter (
+        silver_dispatch_events 
+        | summarize arg_max(ingestion_time(),start_time, sites) by event_id
+        | mv-expand sites
+        | project event_id, event_start_time = start_time, site_id = tostring(sites), command_group_id = 1
+    ) on event_id, site_id, command_group_id
+    | project-away event_id1, site_id1, command_group_id1
+    | order by event_id, site_id, command_start_time asc, command 
+    | serialize rn = row_number()
+    | extend next_command_start_time = iif(event_id == next(event_id, 1) and site_id == next(site_id, 1), next(command_start_time,1), datetime(null))
+        ,next_command_start_discharge = iif(event_id == next(event_id, 1) and site_id == next(site_id, 1), next(command_start_time_discharge,1), real(null))
+        ,next_command_start_charge = iif(event_id == next(event_id, 1) and site_id == next(site_id, 1), next(command_start_time_charge,1), real(null))
+        ,next_command_start_imported = iif(event_id == next(event_id, 1) and site_id == next(site_id, 1), next(command_start_time_imported,1), real(null))
+        ,next_command_start_exported = iif(event_id == next(event_id, 1) and site_id == next(site_id, 1), next(command_start_time_exported,1), real(null))
+        ,next_command_start_battery_power = iif(event_id == next(event_id, 1) and site_id == next(site_id, 1), next(command_start_time_battery_power,1), real(null))
+        ,prev_command_end_battery_power = iif(event_id == prev(event_id, 1) and site_id == prev(site_id, 1), prev(command_end_time_battery_power,1), real(null))
+    | extend 
+        overall_command_start_time = iif(command_group_id == 1 and isnotnull(event_start_time), event_start_time, command_start_time)
+        ,overall_command_end_time  = iif(isnull(next_command_start_time)          , command_end_time               , next_command_start_time)
+        ,overall_command_discharge = iff(isnull(next_command_start_discharge)     , command_end_time_discharge     , next_command_start_discharge)     - iif(command_group_id == 1, 0.0, command_start_time_discharge)
+        ,overall_command_charge    = iff(isnull(next_command_start_charge)        , command_end_time_charge        , next_command_start_charge)        - iif(command_group_id == 1, 0.0, command_start_time_charge)
+        ,overall_command_imported  = iff(isnull(next_command_start_imported)      , command_end_time_imported      , next_command_start_imported)      - iif(command_group_id == 1, 0.0, command_start_time_imported)
+        ,overall_command_exported  = iff(isnull(next_command_start_exported)      , command_end_time_exported      , next_command_start_exported)      - iif(command_group_id == 1, 0.0, command_start_time_exported)
+        ,latest_avg_battery_power  = iff(isnull(next_command_start_battery_power) , command_end_time_battery_power , next_command_start_battery_power) - iif(command_group_id == 1, 0.0, command_start_time_battery_power)
+    | extend overall_command_time_seconds = datetime_diff('second', overall_command_end_time, overall_command_start_time)
+    | extend overall_event_time_seconds = row_cumsum(overall_command_time_seconds, event_id != prev(event_id, 1) or site_id != prev(site_id, 1))
+    | extend overall_command_battery_power = 
+        (latest_avg_battery_power * overall_command_time_seconds 
+        -   (
+                iff(isnull(prev_command_end_battery_power) , 0.0 , prev_command_end_battery_power) 
+                * (overall_event_time_seconds - overall_command_time_seconds)
+            )
+        ) / overall_command_time_seconds
+}","Helper Functions","Grab data about event/site combination of only first and last data per command"

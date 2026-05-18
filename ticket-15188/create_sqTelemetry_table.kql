@@ -1,0 +1,92 @@
+// ============================================================================
+// Ticket 15188: Create sqTelemetry Table in eventhouseVPP
+// Author: Jagan Murikinati
+// Date: 2026-04-20
+// Database: eventhouseVPP
+// ============================================================================
+
+.create table sqTelemetry (
+    // Base Fields
+    siteId: string,
+    assetId: string,
+    oem: string,
+    sourceTimestamp: datetime,
+    
+    // Battery Metrics
+    battery_200_DailyWhExp: real,
+    battery_200_DailyWhExp_dl: string,
+    battery_200_DailyWhImp: real,
+    battery_200_DailyWhImp_dl: string,
+    battery_200_IncWhExp: real,
+    battery_200_IncWhExp_dl: string,
+    battery_200_IncWhImp: real,
+    battery_200_IncWhImp_dl: string,
+    battery_200_TotWhExp: real,
+    battery_200_TotWhExp_dl: string,
+    battery_200_TotWhImp: real,
+    battery_200_TotWhImp_dl: string,
+    battery_200_W: real,
+    battery_200_W_dl: string,
+    battery_713_SoC: real,
+    battery_713_SoC_dl: string,
+    battery_713_SoH: real,
+    battery_713_SoH_dl: string,
+    
+    // Grid Metrics
+    grid_200_DailyWhExp: real,
+    grid_200_DailyWhExp_dl: string,
+    grid_200_DailyWhImp: real,
+    grid_200_DailyWhImp_dl: string,
+    grid_200_IncWhExp: real,
+    grid_200_IncWhExp_dl: string,
+    grid_200_IncWhImp: real,
+    grid_200_IncWhImp_dl: string,
+    grid_200_TotWhExp: real,
+    grid_200_TotWhExp_dl: string,
+    grid_200_TotWhImp: real,
+    grid_200_TotWhImp_dl: string,
+    grid_200_W: real,
+    grid_200_W_dl: string,
+    
+    // Load Metrics
+    load_200_IncWhExp: real,
+    load_200_IncWhExp_dl: string,
+    load_200_IncWhImp: real,
+    load_200_IncWhImp_dl: string,
+    load_200_TotWhExp: real,
+    load_200_TotWhExp_dl: string,
+    load_200_TotWhImp: real,
+    load_200_TotWhImp_dl: string,
+    load_200_W: real,
+    load_200_W_dl: string,
+    
+    // PV (Solar) Metrics
+    pv_200_DailyWhExp: real,
+    pv_200_DailyWhExp_dl: string,
+    pv_200_IncWhExp: real,
+    pv_200_IncWhExp_dl: string,
+    pv_200_IncWhImp: real,
+    pv_200_IncWhImp_dl: string,
+    pv_200_TotWhExp: real,
+    pv_200_TotWhExp_dl: string,
+    pv_200_TotWhImp: real,
+    pv_200_TotWhImp_dl: string,
+    pv_200_W: real,
+    pv_200_W_dl: string
+)
+
+// ============================================================================
+// VERIFICATION
+// ============================================================================
+
+// Check table created
+.show tables | where TableName == "sqTelemetry"
+
+// Check schema
+sqTelemetry
+| getschema
+
+// Verify column count (should be 56)
+sqTelemetry
+| getschema
+| count

@@ -1,0 +1,1 @@
+heading:- Perform nightly data copy from silverCommDataSite table to sqTelemetry table

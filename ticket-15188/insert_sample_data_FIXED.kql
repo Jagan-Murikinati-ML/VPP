@@ -1,0 +1,113 @@
+// ============================================================================
+// Ticket 15188: Insert Sample Data (April 1, 2026) - FINAL VERSION
+// Author: Jagan Murikinati
+// Date: 2026-04-20
+// Updated: 2026-04-23 - Per Naveen's confirmation, data labels default to NULL
+// ============================================================================
+
+// IMPORTANT: Make sure you're connected to eventhouseVPP database when running this!
+
+// First, clear any existing data
+.clear table sqTelemetry data
+
+.set-or-append sqTelemetry <|
+database("eventHouse").silverCommDataSite
+| where sourceTimestamp >= datetime(2026-04-01 00:00:00)
+| where sourceTimestamp < datetime(2026-04-02 00:00:00)
+| project
+    // Base Fields
+    siteId,
+    assetId,
+    oem,
+    sourceTimestamp,
+
+    // Battery Metrics with NULL data labels (per Naveen's confirmation)
+    battery_200_DailyWhExp,
+    battery_200_DailyWhExp_dl = string(null),
+    battery_200_DailyWhImp,
+    battery_200_DailyWhImp_dl = string(null),
+    battery_200_IncWhExp,
+    battery_200_IncWhExp_dl = string(null),
+    battery_200_IncWhImp,
+    battery_200_IncWhImp_dl = string(null),
+    battery_200_TotWhExp,
+    battery_200_TotWhExp_dl = string(null),
+    battery_200_TotWhImp,
+    battery_200_TotWhImp_dl = string(null),
+    battery_200_W,
+    battery_200_W_dl = string(null),
+    battery_713_SoC,
+    battery_713_SoC_dl = string(null),
+    battery_713_SoH,
+    battery_713_SoH_dl = string(null),
+
+    // Grid Metrics with NULL data labels
+    grid_200_DailyWhExp,
+    grid_200_DailyWhExp_dl = string(null),
+    grid_200_DailyWhImp,
+    grid_200_DailyWhImp_dl = string(null),
+    grid_200_IncWhExp,
+    grid_200_IncWhExp_dl = string(null),
+    grid_200_IncWhImp,
+    grid_200_IncWhImp_dl = string(null),
+    grid_200_TotWhExp,
+    grid_200_TotWhExp_dl = string(null),
+    grid_200_TotWhImp,
+    grid_200_TotWhImp_dl = string(null),
+    grid_200_W,
+    grid_200_W_dl = string(null),
+
+    // Load Metrics with NULL data labels
+    load_200_IncWhExp,
+    load_200_IncWhExp_dl = string(null),
+    load_200_IncWhImp,
+    load_200_IncWhImp_dl = string(null),
+    load_200_TotWhExp,
+    load_200_TotWhExp_dl = string(null),
+    load_200_TotWhImp,
+    load_200_TotWhImp_dl = string(null),
+    load_200_W,
+    load_200_W_dl = string(null),
+
+    // PV Metrics with NULL data labels
+    pv_200_DailyWhExp,
+    pv_200_DailyWhExp_dl = string(null),
+    pv_200_IncWhExp,
+    pv_200_IncWhExp_dl = string(null),
+    pv_200_IncWhImp,
+    pv_200_IncWhImp_dl = string(null),
+    pv_200_TotWhExp,
+    pv_200_TotWhExp_dl = string(null),
+    pv_200_TotWhImp,
+    pv_200_TotWhImp_dl = string(null),
+    pv_200_W,
+    pv_200_W_dl = string(null);
+
+// ============================================================================
+// VERIFICATION
+// ============================================================================
+
+// Check row count
+sqTelemetry
+| count
+
+// Check date range and data summary
+sqTelemetry
+| summarize 
+    MinTimestamp = min(sourceTimestamp),
+    MaxTimestamp = max(sourceTimestamp),
+    RowCount = count(),
+    UniqueSites = dcount(siteId),
+    UniquieOEMs = dcount(oem),
+    AvgBatterySOC = avg(battery_713_SoC),
+    MaxBatterySOC = max(battery_713_SoC)
+
+// View sample data with NON-ZERO values
+sqTelemetry
+| where battery_713_SoC > 0 or grid_200_IncWhExp > 0
+| take 10
+
+// Verify data labels
+sqTelemetry
+| project battery_200_DailyWhExp_dl, grid_200_IncWhExp_dl, pv_200_W_dl
+| take 5

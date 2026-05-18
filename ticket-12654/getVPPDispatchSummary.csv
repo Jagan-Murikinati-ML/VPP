@@ -1,0 +1,89 @@
+﻿"Name","Parameters","Body","Folder","DocString"
+"getVPPDispatchSummary","(input_event_id:string, event_start_time:datetime=datetime(null), event_end_time:datetime=datetime(null), project_sites_str:string="""")","{ 
+    // Get event details
+    // let input_event_id = '31d833e1-be0c-44cf-a468-a84a4ab7f77f';  //'6efbe411-cc64-4d32-8448-f84071eaff9c';
+    let evt = 
+        silver_stream_dispatch_events
+        | where event_id == input_event_id 
+        | extend sites_array = parse_json(sites)
+        | extend sites_str = array_strcat(sites_array, "","")
+        | summarize arg_max(ingestion_time(),*) by event_id
+    ;
+    // evt;
+    let evt_id = toscalar(evt | project event_id);
+    let evt_start_time = toscalar(evt | project event_start_time);
+    let evt_end_time = toscalar(evt | project event_end_time);
+    let sites_str = toscalar(evt | project sites_str);// print sites_str;
+    let sites_list = split(sites_str, "",""); //print sites_list
+    // Aggregate metrics from silverCommDataSite for the duration of the event
+    let dispatch_summary = 
+        database('EventHouse').table('silverCommDataSite') 
+        | where siteId in~ (sites_list)
+            and (sourceTimestamp >= evt_start_time and sourceTimestamp < evt_end_time)
+            and battery_200_IncWhExp between (0 .. 7500)
+        | summarize 
+            load_200_W =  avg(load_200_W),
+            pv_200_W = avg(pv_200_W), 
+            battery_200_W = avg(battery_200_W), 
+            battery_200_IncWhImp = sum(battery_200_IncWhImp),
+            battery_200_IncWhExp = sum(battery_200_IncWhExp),
+            grid_200_IncWhImp = sum(grid_200_IncWhImp),
+            grid_200_IncWhExp = sum(grid_200_IncWhExp),
+            count = count()
+        by siteId, bin(sourceTimestamp, 15min)
+        | summarize
+            total_count = sum(count),
+            distinct_site_count = count_distinct(siteId),
+            load_power = sum(iff(isnan(load_200_W),0.0,load_200_W)),
+            missing_load_power = countif(isnan( load_200_W)),
+            pv_power = sum(iff(isnan(pv_200_W),0.0,pv_200_W)),
+            missing_pv_power = countif(isnan( pv_200_W)),
+            battery_power = sum(iff(isnan(battery_200_W),0.0,battery_200_W)),
+            missing_batt_power = countif(isnan( battery_200_W)),
+            sum_battery_200_IncWhImp = sum(battery_200_IncWhImp),
+            sum_battery_200_IncWhExp = sum(battery_200_IncWhExp),
+            sum_grid_200_IncWhImp = sum(grid_200_IncWhImp),
+            sum_grid_200_IncWhExp = sum(grid_200_IncWhExp)
+        by bin(sourceTimestamp, 15min)
+        | order by sourceTimestamp asc
+        | serialize
+        | extend
+            cum_sum_battery_energy_Imp = row_cumsum(sum_battery_200_IncWhImp),
+            cum_sum_battery_energy_Exp = row_cumsum(sum_battery_200_IncWhExp),
+            cum_sum_grid_energy_Imp = row_cumsum(sum_grid_200_IncWhImp),
+            cum_sum_grid_energy_Exp = row_cumsum(sum_grid_200_IncWhExp)
+    ;
+    // Get Site Participation count from silver_site_dispatch_results table
+    let dispatch_site_participation =
+        silver_dispatch_result_dto
+        | where event_id == evt_id
+            and tolower(command) !contains ""stop""
+        | extend command = case(
+            toupper(command) == 'DISCHARGE_TO_HOME_AND_GRID' or toupper(command) == 'DISCHARGE_TO_LOAD_GRID', 'discharge'
+            ,toupper(command) == 'SELF_CONSUMPTION', 'self_consumption'
+            ,toupper(command) == 'CHARGE_FROM_SOLAR' or toupper(command) == 'CHARGE_FROM_GRID_AND_SOLAR' or toupper(command) == 'CHARGE_FROM_PV_GRID', 'charge'
+            ,''
+        )
+        | summarize sites_participation = count_distinct(site_id), overall_event_commands = min(command)
+    ;
+    // dispatch_site_participation;
+    // Join dispatch_summary and dispatch_site_participation tables
+    dispatch_summary
+    | extend dummy = 1
+    | join kind=leftouter (dispatch_site_participation | extend dummy = 1) on dummy
+    | project 
+        evt_id,
+        evt_start_time,
+        evt_end_time,
+        command = overall_event_commands,
+        ts_time = sourceTimestamp,
+        energy_charged = cum_sum_battery_energy_Imp,
+        energy_discharged = cum_sum_battery_energy_Exp,
+        energy_imported = cum_sum_grid_energy_Imp,
+        energy_exported = cum_sum_grid_energy_Exp,
+        battery_power = round(battery_power,3),
+        aggregate_load = round(load_power,3),
+        aggregate_pv = round(pv_power,3),
+        sites_participation,
+        missing_power_count = max_of(missing_batt_power,missing_load_power,missing_pv_power)
+}","API Functions","get latest dispatch event details"

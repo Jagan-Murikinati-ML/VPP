@@ -1,0 +1,31 @@
+Date,Task Name,Hours,Notes,Ticket Number
+01-04-2026,Q1 2026 Solar Energy Production Data Extraction - Extracted solar energy production data for all sites covering January February and March using Tesla API,9,Sprint 4 - Created by Shuai,#13804
+02-04-2026,Q1 Data Processing and Validation - Formatted and validated extracted solar production data for completeness and accuracy,9,Sprint 4,#13804
+03-04-2026,India Public Holiday - Ramzan (Eid-ul-Fitr),0,,
+04-04-2026,Weekend,0,,
+05-04-2026,Weekend,0,,
+06-04-2026,Q1 Data Delivery - Finalized and delivered Q1 2026 solar energy production dataset to stakeholders,9,Sprint 4,#13804
+07-04-2026,New Sites Solar Data Extraction - Extracted solar energy production data for new sites list provided by Shuai,9,Sprint 4 - Created by Shuai,#14806
+08-04-2026,New Sites Data Processing - Formatted and validated solar production data for new sites using Tesla API integration,9,Sprint 4,#14806
+09-04-2026,getAllVppSitesByUserId Filtering Implementation - Implemented server-side filtering logic for multiple fields and operators,9,Sprint 4,#10357
+10-04-2026,Filtering Logic Testing - Tested dynamic filtering functionality with various field combinations and filter operators,9,Sprint 4,#10357
+11-04-2026,Weekend,0,,
+12-04-2026,Weekend,0,,
+13-04-2026,DSGS 15-Min Interval Data Export - Extracted 15-minute interval data from batteries enrolled in DSGS program,9,Sprint 4 - Created by Shuai,DSGS Export
+14-04-2026,Sorting and Search Implementation - Developed server-side sorting and global search functionality for getAllVppSitesByUserId,9,Sprint 4,#10357
+15-04-2026,sqTelemetry Table Design - Designed table schema with all required columns and data label fields for SQMD data support,9,Sprint 5,#14469
+16-04-2026,sqTelemetry Table Creation - Created sqTelemetry table in DEV environment with designed schema,9,Sprint 5,#14469
+17-04-2026,sqTelemetry Data Copy - Copied 1-2 days worth of data from silverCommDataSite to sqTelemetry table,9,Sprint 5,#14469
+18-04-2026,Weekend,0,,
+19-04-2026,Weekend,0,,
+20-04-2026,sqTelemetry Data Verification - Verified data exists and matches between silverCommDataSite and sqTelemetry tables,9,Sprint 5,#14469
+21-04-2026,sqTelemetry Testing and Validation - Validated table structure and data integrity with sample queries,9,Sprint 5,#14469
+22-04-2026,Postgres Database Enhancement - Added optimization_enabled and optimization_schedule columns to tb_bas_program_info table,9,Sprint 5,#14782
+23-04-2026,Postgres Migration Script Development - Created ALTER TABLE commands with column constraints and default values,9,Sprint 5,#14782
+24-04-2026,Postgres Migration Testing - Executed schema changes in DEV environment and verified column additions,9,Sprint 5,#14782
+25-04-2026,Weekend,0,,
+26-04-2026,Weekend,0,,
+27-04-2026,sqTelemetry Pipeline Configuration - Configured incremental data copy pipeline from silverCommDataSite,9,Sprint 5,#14469
+28-04-2026,Pipeline Testing and Validation - Tested nightly incremental copy job and validated data accuracy,9,Sprint 5,#14469
+29-04-2026,Documentation Preparation - Created deployment guides and documentation for sqTelemetry and Postgres changes,9,Sprint 5,"#14469, #14782"
+30-04-2026,Final Testing and Sprint Completion - Completed final validation and prepared status updates for Sprint 5 completion,9,Sprint 5,"#14469, #14782"

@@ -1,0 +1,16 @@
+//### Query 4.2: Event2 Telemetry Data
+// Purpose: Check if Event2 has telemetry data in silverCommDataSite
+// Expected Result: NO DATA (Event2 is missing from the table)
+
+database("EventHouse").silverCommDataSite
+| where sourceTimestamp >= datetime(2026-03-18 03:52:00)
+    and sourceTimestamp < datetime(2026-03-18 03:55:00)
+    and siteId in ("400005338", "400002333", "400002331", "400005226")
+| summarize
+    total_charged = sum(battery_200_IncWhImp),
+    total_discharged = sum(battery_200_IncWhExp),
+    row_count = count()
+    by siteId
+| extend net_energy = total_charged - total_discharged
+| order by siteId
+

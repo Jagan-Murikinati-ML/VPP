@@ -1,0 +1,187 @@
+    .create-or-alter function with (folder = "Poc", docstring = "Get All VPP Sites data") 
+    getAllVppSitesByUserId_test_notreleased(inputUserId:string="", page:int=0, page_size:int=10) {
+        // Juan's optimized version - consolidates goldAdtPropertyMinMaxLatestViewV2 queries
+        
+        // Step 1: User mapping - OPTIMIZED with nested subqueries
+        let site_ids_from_user = 
+            goldAdtTwinEventsLatestV2
+            | where TwinId in (
+                goldResourceGroupToSiteMapping 
+                | where resource_group_id in (
+                    goldUserGroupToResourceGroupMapping 
+                    | where user_group_id in (
+                        goldUserGroupToUserMapping 
+                        | where user_ids == inputUserId and isingroup > 0
+                        | project user_group_id
+                    ) and isingroup > 0 
+                    | project resource_group_ids
+                ) and isingroup > 0
+                | project site_ids
+            ) and Action != 'Delete'
+            | extend siteId = TwinId
+            | summarize make_set(TwinId)
+            | project list_site_ids = set_TwinId
+        ;
+        
+        // Step 2: VPP registered sites
+        let vppSites = materialize (
+            goldAdtPropertyMinMaxLatestViewV2 
+            | where Id in (site_ids_from_user)
+            | where Key == 'isVppRegistered' and tolower(valueMax) == 'true'
+            | join kind=inner (goldAdtTwinEventsLatestV2 | where Action != 'Delete') 
+                on $left.Id == $right.TwinId
+        );
+        
+        // Step 3: Pagination
+        let paginatedSiteIdsTable = vppSites
+            | order by Id asc
+            | serialize Rank = row_number()
+            | where Rank > page * page_size and Rank <= (page + 1) * page_size
+            | distinct siteId = Id
+        ;
+        let paginatedSiteIdsList = toscalar(paginatedSiteIdsTable | summarize make_list(siteId));
+        
+        // Step 4: Site properties - OPTIMIZED single query instead of GetSiteProperties()
+        let goldAdtPropertySites_new = 
+            materialize(
+                goldAdtPropertyMinMaxLatestViewV2
+                | where Id in (paginatedSiteIdsList)
+                    and actionMax != 'Delete'
+                    and (Key startswith "oemInfo" and Key endswith "oemName"
+                        or Key in (dynamic(['address.stateProvince','address.zipPostalCode',
+                                        'address.location.timeZone','siteName'])))
+                | summarize
+                    state = take_anyif(valueMax, Key == 'address.stateProvince'),
+                    zipCode = take_anyif(valueMax, Key == 'address.zipPostalCode'),
+                    timezone = take_anyif(valueMax, Key == 'address.location.timeZone'),
+                    siteName = take_anyif(valueMax, Key == 'siteName'),
+                    (_, oem) = arg_max(
+                        iif(Key == 'oemInfo.oemName', -1,
+                            iif(Key startswith "oemInfo" and Key endswith "oemName", 
+                                toint(extract(@'oemInfo\.(\d+)\.oemName', 1, Key)), 
+                                int(null)))
+                        , valueMax)
+                by siteId = Id
+            )
+        ;
+        
+        // Step 5: Telemetry data
+        let commData = silverCommDataSite
+            | where siteId in (paginatedSiteIdsList) 
+            | summarize arg_max(sourceTimestamp, *) by siteId
+            | join kind=leftouter (goldAdtPropertySites_new | project siteId, timezone) on siteId
+            | extend timezone = coalesce(timezone, "UTC")
+            | extend localTimestamp = case(timezone == "UTC", now(), 
+                                        datetime_utc_to_local(sourceTimestamp, timezone))
+            | project siteId,
+                    SOC = battery_713_SoC,
+                    grid_energy_imported = grid_200_IncWhImp, 
+                    grid_energy_exported = grid_200_IncWhExp,
+                    last_update_in_local_time = localTimestamp,
+                    inverter_status = sourceTimestamp > now() - 1h, 
+                    last_updated_timestamp_utc = sourceTimestamp,
+                    timezone
+        ;
+        
+        // Step 6: Program data
+        let program_data = GetLatestProgramSiteInfo
+            | where site_id in (paginatedSiteIdsList)
+            | join kind=inner (
+                GetLatestProgramInfo 
+                | project program_id, program_name, program_type
+            ) on program_id
+            | summarize program_name = make_set(program_name) by site_id
+        ;
+        
+        // Step 7: Device relationships - OPTIMIZED using goldAdtAllRelationshipsLatestView
+        let relatedDevices = 
+            materialize(
+                goldAdtAllRelationshipsLatestView
+                | where Action != 'Delete' 
+                    and Source in (paginatedSiteIdsList) 
+                    and Name in ("hasDevice","hasSystemInfo")
+                | project siteId = Source, deviceId = Target, Name
+            )
+        ;
+        
+        // Step 7a: Rated capacity - OPTIMIZED approach
+        let rated_capacity_newtry =
+            goldAdtPropertyMinMaxLatestViewV2
+            | where Key in ('nameplateInfo.wMaxRtg','productInfo.prodSubType')
+            | join kind = inner (
+                goldAdtTwinEventsLatestV2
+                | where Action != 'Delete' and ModelId startswith "dtmi:qcells:device:"
+                | project TwinId, ModelId
+            ) on $left.Id == $right.TwinId and $left.ModelId == $right.ModelId 
+            | project-away TwinId, ModelId1
+            | lookup kind = inner (relatedDevices | where Name == 'hasDevice') 
+                on $left.Id == $right.deviceId
+            | summarize
+                rated_capacity = anyif(valueMax, Key == 'nameplateInfo.wMaxRtg'),
+                prodSubType = anyif(valueMax, Key == 'productInfo.prodSubType'),
+                max_timeMax = max(timeMax)
+            by siteId, deviceId = Id
+            | where prodSubType in ("HybridInverter","BatteryInverter")
+            | summarize arg_max(max_timeMax,*) by siteId
+            | project SiteId = siteId, rated_capacity, timeMax = max_timeMax, prodSubType
+        ;
+        
+        // Step 7b: System size - OPTIMIZED approach
+        let system_size_newtry = 
+            goldAdtPropertyMinMaxLatestViewV2
+            | where Key in ('systemSizeKw')
+            | lookup kind = inner (relatedDevices | where Name == 'hasSystemInfo') 
+                on $left.Id == $right.deviceId
+            | summarize 
+                (priorityModel, system_size_kw) = arg_min(
+                    case(
+                        ModelId startswith "dtmi:qcells:systemInfo:defaultSystemInfo", 1,
+                        ModelId startswith "dtmi:qcells:systemInfo:pvSystemInfo", 2,
+                        999
+                    ), valueMax) 
+            by siteId
+        ;
+        
+        // Step 8: Combine all data
+        let result_data = 
+            goldAdtPropertySites_new
+            | project siteId, siteName, zipPostalCode = zipCode, state = state, oemname = oem
+            | join kind=leftouter (program_data) on $left.siteId == $right.site_id
+            | join kind=leftouter (commData) on siteId
+            | join kind=leftouter (rated_capacity_newtry) on $left.siteId == $right.SiteId
+            | join kind=leftouter (system_size_newtry) on $left.siteId == $right.siteId
+            | extend data = pack(
+                'site_number', siteId,
+                'site_name', siteName,
+                'state', state,
+                'zipPostalCode', zipPostalCode,
+                'program_name', program_name,
+                'SOC', SOC,
+                'rated_capacity', rated_capacity,
+                'system_size_kw', system_size_kw,
+                'inverter_status', inverter_status,
+                'grid_energy_imported', grid_energy_imported,
+                'grid_energy_exported', grid_energy_exported,
+                'lifetime_production', '-',
+                'oem_name', oemname,
+                'last_update_in_local_time', last_update_in_local_time,
+                'last_updated_timestamp_utc', last_updated_timestamp_utc,
+                'timezone', timezone             
+            )
+        ;
+        
+        // Step 9: Pagination metadata
+        let data_value = result_data | summarize data = make_list(data);
+        let page_count = toscalar(result_data | summarize count());
+        let total_count = toscalar(vppSites | summarize count = count_distinct(Id));
+        let pagination_metadata = pack('pagination', pack('page', page, 'page_size', page_count, 'total_count', total_count));
+        let status = iff(total_count == 0, 404, 200);
+        
+        data_value
+        | extend metadata = pagination_metadata, status = status
+        | project metadata, data, status
+    }
+
+
+
+

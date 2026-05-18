@@ -1,0 +1,47 @@
+﻿"Name","Parameters","Body","Folder","DocString"
+"getVPPExportSummaryByProgram","(program_name:string="""")","{
+    let inputProgramName = iff(
+        isempty(program_name),
+        dynamic([]),
+        split(program_name, "","")
+    )
+;
+let events_summary = 
+    materialize(
+        silver_stream_dispatch_events
+        | summarize arg_max(event_processed_utc_time, *) by event_id
+        | join kind = inner (
+            silver_dispatch_summary
+            | summarize arg_max(ts_time, *) by event_id
+        ) on $left.event_id == $right.event_id
+        | where array_length(inputProgramName) == 0 or program_name in (inputProgramName)
+        | summarize arg_max(ingestion_time(), *) by event_id
+        | project program_name, event_id, event_start_time, event_end_time, event_status, sites, ts_time, energy_exported
+    )
+;
+let daily_energy_exp = events_summary
+    | where event_start_time >= startofday(now()) and event_start_time <= endofday(now())
+    | summarize daily_energy_exported = sum(energy_exported) by program_name
+; 
+let monthly_energy_exp = events_summary
+    | where event_start_time >= startofmonth(now()) and event_start_time <= endofmonth(now())
+    | summarize monthly_energy_exported = sum(energy_exported) by program_name
+;
+let yearly_energy_exp = events_summary
+    | where event_start_time >= startofyear(now()) and event_start_time <= endofyear(now())
+    | summarize yearly_energy_exported = sum(energy_exported) by program_name
+;
+let lifetime_energy_exp = events_summary
+    | summarize lifetime_energy_exported = sum(energy_exported) by program_name
+;
+events_summary
+    | join kind = leftouter (daily_energy_exp) on program_name
+    | join kind = leftouter (monthly_energy_exp) on program_name
+    | join kind = leftouter (yearly_energy_exp) on program_name
+    | join kind = leftouter (lifetime_energy_exp) on program_name
+    | distinct program_name, 
+            daily_energy_exported = iff(isempty(daily_energy_exported), real(0), round(daily_energy_exported,3)),
+            monthly_energy_exported = iff(isempty(monthly_energy_exported), real(0), round(monthly_energy_exported,3)), 
+            yearly_energy_exported = iff(isempty(yearly_energy_exported), real(0), round(yearly_energy_exported,3)), 
+            lifetime_energy_exported = iff(isempty(lifetime_energy_exported), real(0), round(lifetime_energy_exported,3))       
+}","API Functions","Get VPP export summary data by program"

@@ -1,0 +1,14 @@
+﻿"Name","Parameters","Body","Folder","DocString"
+"getMultipleEventsSiteDispatchResults","(inputCommaSeparatedEventIds:dynamic, inputSiteIds:dynamic=dynamic([]))","{
+    // let inputEventIds = dynamic(['73c1339c-b8b2-409d-bc83-59e414fc30d9','5068dd44-a37e-4a88-9ed1-93616cb66318','dabb4e05-1b70-44b5-aca7-f41a61f1b66c']); //qa
+    // let inputSiteIds = dynamic(['110021001','110021002','110021003','110021004','110021005','400000037']); //qa
+    // all envs test below
+    // let teststrcte = silver_stream_dispatch_events | summarize arg_max(event_processed_utc_time,*) by event_id | where event_end_time > ago(7d) | order by event_end_time asc | limit 64 | summarize make_list(event_id);
+    // let inputEventIds = toscalar(teststrcte);    let inputSiteIds = dynamic([]);
+    // fxn start below
+    let fxnToLoop = (inputEvent:string){ getSiteDispatchResults(inputEvent, inputSiteIds) };
+    let fxn_wrapper = (T:(eventId:string)){ let singleEventId = toscalar(T | project eventId); fxnToLoop(singleEventId); };
+    print eventId=inputEventIds
+    | mv-expand with_itemindex=individualEvent eventId to typeof(string)
+    | partition by individualEvent (invoke fxn_wrapper())
+}","Helper Functions","Get site level telemetry data for list of events, siteids optional"

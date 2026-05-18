@@ -1,0 +1,17 @@
+✅ MIGRATION COMPLETED SUCCESSFULLY - Fri Mar 20 13:36:32 UTC 2026
+
+Database: assetdb
+Schema: asset
+Environment: DEV
+
+CORRECTED: site_owner_authorization moved from tb_opr_program_site_info to tb_vpp_group_site per Shaun's comment
+
+Final Columns Added:
+     table_name      |         column_name         |     data_type     |               column_default               
+---------------------+-----------------------------+-------------------+--------------------------------------------
+ tb_bas_program_info | auto_enrollment             | boolean           | false
+ tb_bas_site         | utility_meter_id            | character varying | 
+ tb_bas_site         | utility_meter_serial_number | character varying | 
+ tb_vpp_group_site   | site_owner_authorization    | USER-DEFINED      | 'PENDING'::asset.site_authorization_status
+(4 rows)
+
