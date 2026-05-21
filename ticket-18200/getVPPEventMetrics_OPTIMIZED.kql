@@ -1,0 +1,148 @@
+.create-or-alter function getVPPEventMetrics(input_event_name:string) {
+    // ============================================================================
+    // OPTIMIZED VERSION - Ticket 18200
+    // Target: 1-2 seconds (down from 8-22 seconds)
+    // ============================================================================
+    
+    // Parse input
+    let inputListParsed = iff(
+        isempty(input_event_name),
+        dynamic([]),
+        split(input_event_name, ",")
+    );
+    
+    let history_for_avg_calc = 7d;
+    
+    // ============================================================================
+    // OPTIMIZATION 1: Materialize program lookup
+    // ============================================================================
+    let grab_programs = materialize(
+        silver_stream_dispatch_events
+        | where isempty(input_event_name) or event_id in (inputListParsed)
+        | distinct program_name
+    );
+    
+    // ============================================================================
+    // OPTIMIZATION 2: Add time filter to reduce data scan
+    // KEY CHANGE: Only look at events from last 30 days + upcoming 7 days
+    // ============================================================================
+    let grab_sites = materialize(
+        silver_stream_dispatch_events
+        | where program_name in (grab_programs)
+            and event_end_time > ago(30d)          // ⚡ ADDED: Prevents scanning years of data
+            and event_end_time < now() + 7d        // ⚡ ADDED: Reasonable future window
+        | summarize arg_max(created_at_utc,*) by event_id
+        | distinct program_name, event_id, tostring(sites), event_end_time
+        | mv-expand todynamic(sites)
+        | project program_name, event_id, sites = tostring(sites), event_end_time
+    );
+    
+    // ============================================================================
+    // OPTIMIZATION 3: Materialize asset availability
+    // ============================================================================
+    let asset_availability = materialize(
+        grab_sites 
+        | summarize available_sites = count_distinct(sites) by event_id, program_name 
+        | where event_id in (inputListParsed) or isempty(input_event_name)
+    );
+    
+    // Get event history list
+    let listForEventHistory = toscalar(
+        grab_sites
+        | where event_end_time < now()
+        | order by event_end_time desc
+        | limit 64
+        | summarize make_list(event_id)
+    );
+    
+    // ============================================================================
+    // OPTIMIZATION 4: Only pass sites for requested events
+    // KEY CHANGE: Don't pass ALL sites to helper function
+    // ============================================================================
+    let uniqueSites = toscalar(
+        grab_sites 
+        | where event_id in (inputListParsed) or isempty(input_event_name)
+        | distinct sites 
+        | summarize make_list(sites)
+    );
+    
+    // ============================================================================
+    // OPTIMIZATION 5: Materialize expensive helper function result
+    // ============================================================================
+    let allEventData = materialize(
+        getSiteDispatchCommandSummary(
+            inputEventIds=listForEventHistory, 
+            inputSiteIds=uniqueSites
+        )
+    );
+    
+    // ============================================================================
+    // OPTIMIZATION 6: Simplify program details logic
+    // KEY CHANGE: Use rightouter join instead of complex union/anti-join
+    // ============================================================================
+    let program_details = materialize(
+        allEventData
+        | summarize 
+            max_overall_command_end_time = max(overall_command_end_time), 
+            command_energy_exported = sum(overall_command_exported) 
+          by event_id, site_id, command_type
+        | join kind = rightouter grab_sites 
+          on $left.site_id == $right.sites and $left.event_id == $right.event_id
+        | extend command_type = coalesce(command_type, "discharge")  // Default for missing data
+        | project 
+            program_name,
+            event_id,
+            site_id = coalesce(site_id, sites),
+            command_type,
+            max_overall_command_end_time,
+            command_energy_exported = coalesce(command_energy_exported, 0.0)
+    );
+    
+    // ============================================================================
+    // OPTIMIZATION 7: Materialize intermediate aggregations
+    // ============================================================================
+    let program_avg = materialize(
+        program_details
+        | summarize 
+            avg_energy_for_program = avgif(
+                command_energy_exported, 
+                max_overall_command_end_time >= ago(history_for_avg_calc)
+            ) 
+          by program_name, command_type
+    );
+    
+    let program_dispatch = materialize(
+        program_details
+        | summarize 
+            dispatch_time = max(max_overall_command_end_time), 
+            assets_ran = count_distinctif(site_id, isnotempty(site_id)) 
+          by event_id, program_name, command_type
+    );
+    
+    // ============================================================================
+    // Final result assembly
+    // ============================================================================
+    program_avg
+    | join kind = inner program_dispatch on program_name, command_type
+    | join kind = inner asset_availability on program_name, event_id
+    | extend event_info = bag_pack(
+        'program_name', program_name,
+        'event_id', event_id,
+        'event_type', command_type,
+        'dispatch_time', dispatch_time,
+        'forecast_dispatch_kWh', round(
+            iff(isnan(avg_energy_for_program), 0.0, avg_energy_for_program) * available_sites / 1000, 
+            2
+        ),
+        'asset_availability', iff(
+            isempty(dispatch_time),
+            'pending dispatch',
+            strcat(tostring(assets_ran), '/', tostring(available_sites))
+        )
+    )
+    | where command_type != 'stop'
+    | order by program_name, event_id
+    | summarize data = make_list(event_info)
+}
+
+

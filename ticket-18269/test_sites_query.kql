@@ -1,0 +1,163 @@
+// ============================================================================
+// TICKET 18269 - Find Test Sites with Type 1 OEM Data
+// ============================================================================
+
+// ============================================================================
+// QUERY 1: Find sites with BOTH Type 0 and Type 1 OEM information
+// ============================================================================
+
+print "=== QUERY 1: Sites with Type 0 AND Type 1 OEM ===";
+
+goldAdtPropertyMinMaxLatestViewV2
+| where Key in ('oemInfo.0.oemName', 'oemInfo.0.oemSiteId', 
+               'oemInfo.1.oemName', 'oemInfo.1.oemSiteId',
+               'siteId')
+| where actionMax != 'Delete'
+| where ModelId startswith 'dtmi:qcells:site'  // Only site twins
+| summarize 
+    siteId = take_anyif(valueMax, Key == 'siteId'),
+    type0_oemName = take_anyif(valueMax, Key == 'oemInfo.0.oemName'),
+    type0_oemSiteId = take_anyif(valueMax, Key == 'oemInfo.0.oemSiteId'),
+    type1_oemName = take_anyif(valueMax, Key == 'oemInfo.1.oemName'),
+    type1_oemSiteId = take_anyif(valueMax, Key == 'oemInfo.1.oemSiteId')
+by Id
+| where isnotnull(type1_oemName)  // Only sites with Type 1 OEM
+| project siteId, type0_oemName, type0_oemSiteId, type1_oemName, type1_oemSiteId
+| take 20;
+
+
+// ============================================================================
+// QUERY 2: Count sites by OEM combination
+// ============================================================================
+
+print "=== QUERY 2: Count of Sites by OEM Combination ===";
+
+goldAdtPropertyMinMaxLatestViewV2
+| where Key in ('oemInfo.0.oemName', 'oemInfo.1.oemName')
+| where actionMax != 'Delete'
+| where ModelId startswith 'dtmi:qcells:site'
+| summarize 
+    type0_oemName = take_anyif(valueMax, Key == 'oemInfo.0.oemName'),
+    type1_oemName = take_anyif(valueMax, Key == 'oemInfo.1.oemName')
+by Id
+| extend has_type1 = isnotnull(type1_oemName)
+| summarize count() by type0_oemName, type1_oemName, has_type1
+| order by count_ desc;
+
+
+// ============================================================================
+// QUERY 3: Find battery devices and their sites
+// ============================================================================
+
+print "=== QUERY 3: Battery Devices Connected to Sites ===";
+
+// Get battery devices
+let batteryDevices = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId, ModelId;
+
+// Get relationships: sites -> battery devices
+let siteWithBattery = 
+    goldAdtAllRelationshipsLatestView
+    | where Action != 'Delete'
+    | where Target in (batteryDevices | project batteryTwinId)
+    | project siteId = Source, batteryTwinId = Target;
+
+// Get site details
+siteWithBattery
+| join kind=inner (
+    goldAdtPropertyMinMaxLatestViewV2
+    | where Key == 'siteId'
+    | where actionMax != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:site'
+    | project siteTwinId = Id, siteId = valueMax
+) on $left.siteId == $right.siteTwinId
+| distinct siteId
+| take 20;
+
+
+// ============================================================================
+// QUERY 4: Detailed view of a specific site (REPLACE WITH ACTUAL SITE ID)
+// ============================================================================
+
+print "=== QUERY 4: Detailed View of Specific Site ===";
+
+let testSiteId = "400061892";  // Tesla site from data.csv
+
+goldAdtPropertyMinMaxLatestViewV2
+| where Key startswith 'oemInfo' or Key == 'siteId' 
+       or Key startswith 'productInfo' 
+       or Key == 'nameplateInfo.wMaxRtg'
+| where actionMax != 'Delete'
+| where ModelId startswith 'dtmi:qcells:site'
+| where Id in (
+    goldAdtPropertyMinMaxLatestViewV2
+    | where Key == 'siteId' and valueMax == testSiteId
+    | project Id
+)
+| project Key, valueMax
+| order by Key asc;
+
+
+// ============================================================================
+// QUERY 5: Check current report data for comparison
+// ============================================================================
+
+print "=== QUERY 5: Check if site exists in current report data ===";
+
+// NOTE: This assumes you have access to the current report table
+// Replace 'goldAdtPropertySites' with actual report table name if different
+
+// Example for site 400061892 (Tesla site from data.csv)
+let testSiteId = "400061892";
+
+goldAdtPropertyMinMaxLatestViewV2
+| where Key in ('siteId', 'oemInfo.0.oemName', 'oemInfo.0.oemSiteId', 
+               'oemInfo.1.oemName', 'oemInfo.1.oemSiteId',
+               'productInfo.prodSubType', 'nameplateInfo.wMaxRtg')
+| where actionMax != 'Delete'
+| where Id in (
+    goldAdtPropertyMinMaxLatestViewV2
+    | where Key == 'siteId' and valueMax == testSiteId
+    | project Id
+)
+| summarize 
+    siteId = take_anyif(valueMax, Key == 'siteId'),
+    type0_oemName = take_anyif(valueMax, Key == 'oemInfo.0.oemName'),
+    type0_oemSiteId = take_anyif(valueMax, Key == 'oemInfo.0.oemSiteId'),
+    type1_oemName = take_anyif(valueMax, Key == 'oemInfo.1.oemName'),
+    type1_oemSiteId = take_anyif(valueMax, Key == 'oemInfo.1.oemSiteId'),
+    prodSubType = take_anyif(valueMax, Key == 'productInfo.prodSubType'),
+    wMaxRtg = take_anyif(valueMax, Key == 'nameplateInfo.wMaxRtg')
+by Id
+| project siteId, type0_oemName, type0_oemSiteId, type1_oemName, type1_oemSiteId, 
+         prodSubType, wMaxRtg;
+
+
+// ============================================================================
+// QUERY 6: Battery flag logic comparison
+// ============================================================================
+
+print "=== QUERY 6: Battery Detection - Compare Methods ===";
+
+let testSites = dynamic(["400061892", "100001549", "100011910"]);  // Tesla, 2 Qcells
+
+goldAdtPropertyMinMaxLatestViewV2
+| where Key in ('siteId', 'productInfo.prodSubType', 'nameplateInfo.wMaxRtg')
+| where actionMax != 'Delete'
+| where Id in (
+    goldAdtPropertyMinMaxLatestViewV2
+    | where Key == 'siteId' and valueMax in (testSites)
+    | project Id
+)
+| summarize 
+    siteId = take_anyif(valueMax, Key == 'siteId'),
+    prodSubType = take_anyif(valueMax, Key == 'productInfo.prodSubType'),
+    wMaxRtg = take_anyif(valueMax, Key == 'nameplateInfo.wMaxRtg')
+by Id
+| extend 
+    method_A_prodSubType = prodSubType in ('HybridInverter', 'BatteryInverter'),
+    method_B_wMaxRtg = todouble(wMaxRtg) > 0
+| project siteId, prodSubType, wMaxRtg, method_A_prodSubType, method_B_wMaxRtg;

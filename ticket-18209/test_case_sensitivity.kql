@@ -1,0 +1,34 @@
+// Test to verify if KQL 'contains' operator is case-sensitive or not
+
+// Create test data
+let test_data = datatable(name: string)
+[
+    "Tesla",
+    "TESLA",
+    "tesla",
+    "TeSLa"
+];
+
+// Test 1: contains with lowercase search
+print "Test 1: Search for 'tesla' (lowercase)";
+test_data
+| where name contains "tesla"
+| project name;
+
+// Test 2: contains with uppercase search
+print "Test 2: Search for 'TESLA' (uppercase)";
+test_data
+| where name contains "TESLA"
+| project name;
+
+// Test 3: contains with mixed case search
+print "Test 3: Search for 'Tesla' (mixed case)";
+test_data
+| where name contains "Tesla"
+| project name;
+
+// Test 4: tolower on both sides
+print "Test 4: Search for 'tesla' with tolower() on both sides";
+test_data
+| where tolower(name) contains tolower("TeSLa")
+| project name;

@@ -172,7 +172,7 @@
             sort_field == "state", tolower(state),
             sort_field == "zipPostalCode", zipPostalCode,
             sort_field == "external_reference_id", tolower(accountNumber),
-            sort_field == "program_name", tolower(strcat_array(program_name, ", ")),
+            sort_field == "program_name", strcat_array(array_sort_asc(program_name), ", "),
             sort_field == "oem_name", tolower(oemname),
             sort_key_padded
         )

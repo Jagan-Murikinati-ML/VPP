@@ -1,0 +1,4 @@
+﻿database("eventhouse").goldAdtPropertySites
+| getschema
+| project ColumnName, ColumnType
+| order by ColumnName asc

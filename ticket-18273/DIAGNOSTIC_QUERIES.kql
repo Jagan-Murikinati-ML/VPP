@@ -1,0 +1,221 @@
+// ============================================================================
+// TICKET 18273 - DIAGNOSTIC QUERIES
+// Missing Telemetry Data for 3 TX VPP Sites
+// ============================================================================
+
+// Target sites
+let target_app_ids = dynamic(["APPTPO-2505706267", "APPTPO-2503643621", "APPTPO-2410442068"]);
+let target_account_numbers = dynamic(["2505706267", "2503643621", "2410442068"]);
+let target_enphase_ids = dynamic(["5939292", "5792277"]);
+let target_tesla_id = "b392405d-2efc-4042-80e3-068ba6210c36";
+
+// ============================================================================
+// QUERY 1: Check if Sites Exist in goldAdtPropertySites
+// ============================================================================
+
+print "=== QUERY 1: Site Existence Check ===";
+goldAdtPropertySites
+| where siteId in (target_app_ids)
+    or accountNumber in (target_account_numbers)
+    or siteId in (target_enphase_ids)
+    or siteId == target_tesla_id
+| project 
+    siteId,
+    accountNumber,
+    oemname,
+    siteName,
+    state,
+    externalReferenceId,
+    createdAt,
+    updatedAt
+| order by oemname, siteId
+
+
+// ============================================================================
+// QUERY 2: Check Telemetry with APP IDs
+// ============================================================================
+
+print "=== QUERY 2: Telemetry Check (APP IDs) ===";
+silverCommDataSite
+| where siteId in (target_app_ids)
+| summarize 
+    earliest_telemetry = min(sourceTimestamp),
+    latest_telemetry = max(sourceTimestamp),
+    record_count = count(),
+    sample_data = take_any(battery_713_SoC)
+    by siteId, oem
+| extend 
+    days_since_last = datetime_diff('day', now(), latest_telemetry),
+    status = iff(latest_telemetry > ago(1h), "online", "offline")
+| order by latest_telemetry desc
+
+
+// ============================================================================
+// QUERY 3: Check Telemetry with OEM IDs
+// ============================================================================
+
+print "=== QUERY 3: Telemetry Check (OEM IDs) ===";
+silverCommDataSite
+| where siteId in (target_enphase_ids) or siteId == target_tesla_id
+| summarize 
+    earliest_telemetry = min(sourceTimestamp),
+    latest_telemetry = max(sourceTimestamp),
+    record_count = count(),
+    sample_data = take_any(battery_713_SoC)
+    by siteId, oem
+| extend 
+    days_since_last = datetime_diff('day', now(), latest_telemetry),
+    status = iff(latest_telemetry > ago(1h), "online", "offline")
+| order by latest_telemetry desc
+
+
+// ============================================================================
+// QUERY 4: Search All Possible ID Variations
+// ============================================================================
+
+print "=== QUERY 4: Fuzzy Search for Sites ===";
+goldAdtPropertySites
+| where accountNumber contains "2505706267"
+    or accountNumber contains "2503643621"
+    or accountNumber contains "2410442068"
+    or siteId contains "5939292"
+    or siteId contains "5792277"
+    or siteId contains "b392405d"
+    or externalReferenceId contains "2505706267"
+    or externalReferenceId contains "2503643621"
+    or externalReferenceId contains "2410442068"
+| project siteId, accountNumber, oemname, externalReferenceId, siteName, createdAt
+| order by createdAt desc
+
+
+// ============================================================================
+// QUERY 5: Check Account Number Pattern in Telemetry
+// ============================================================================
+
+print "=== QUERY 5: Check Account Numbers in Telemetry ===";
+silverCommDataSite
+| where siteId contains "2505706267"
+    or siteId contains "2503643621"
+    or siteId contains "2410442068"
+| summarize 
+    latest_telemetry = max(sourceTimestamp),
+    record_count = count()
+    by siteId, oem
+| order by latest_telemetry desc
+
+
+// ============================================================================
+// QUERY 6: Compare with Working TX VPP Sites
+// ============================================================================
+
+print "=== QUERY 6: Sample Working TX VPP Sites ===";
+goldAdtPropertySites
+| where state == "TX" 
+    and (isVppRegistered == true or isVppRegistered == "True")
+    and oemname in ("Enphase", "Tesla")
+| join kind=leftouter (
+    silverCommDataSite
+    | summarize latest = max(sourceTimestamp) by siteId
+) on siteId
+| where latest > ago(1h)  // Online sites
+| take 5
+| project siteId, oemname, accountNumber, latest, status = "Working TX VPP Site"
+
+
+// ============================================================================
+// QUERY 7: Comprehensive Diagnostic (Combine All)
+// ============================================================================
+
+print "=== QUERY 7: COMPREHENSIVE DIAGNOSTIC ===";
+
+// Site registration check
+let site_registration = 
+    goldAdtPropertySites
+    | where siteId in (target_app_ids)
+        or accountNumber in (target_account_numbers)
+        or siteId in (target_enphase_ids)
+        or siteId == target_tesla_id
+    | project 
+        fabric_siteId = siteId,
+        accountNumber,
+        oemname,
+        siteName,
+        registered = true
+;
+
+// Telemetry with APP IDs
+let telemetry_by_app_id = 
+    silverCommDataSite
+    | where siteId in (target_app_ids)
+    | summarize 
+        app_id_latest = max(sourceTimestamp),
+        app_id_count = count()
+        by app_siteId = siteId, app_oem = oem
+;
+
+// Telemetry with OEM IDs
+let telemetry_by_oem_id = 
+    silverCommDataSite
+    | where siteId in (target_enphase_ids) or siteId == target_tesla_id
+    | summarize 
+        oem_id_latest = max(sourceTimestamp),
+        oem_id_count = count()
+        by oem_siteId = siteId, oem_oem = oem
+;
+
+// Combine all
+site_registration
+| join kind=fullouter telemetry_by_app_id on $left.fabric_siteId == $right.app_siteId
+| join kind=fullouter telemetry_by_oem_id on $left.oemname == $right.oem_oem
+| project 
+    fabric_siteId = coalesce(fabric_siteId, app_siteId),
+    accountNumber,
+    oemname = coalesce(oemname, app_oem, oem_oem),
+    siteName,
+    registered,
+    telemetry_with_app_id = app_id_count,
+    app_id_latest,
+    telemetry_with_oem_id = oem_id_count,
+    oem_id_latest,
+    oem_siteId,
+    diagnosis = case(
+        isnotnull(app_id_count) and app_id_count > 0, "✅ Telemetry found with APP ID",
+        isnotnull(oem_id_count) and oem_id_count > 0, "⚠️ Telemetry found with OEM ID (ID mismatch!)",
+        registered == true, "❌ Site registered but NO telemetry",
+        "❌ Site NOT registered in Fabric"
+    )
+| order by diagnosis
+
+
+// ============================================================================
+// QUERY 8: Check Tesla Site Specifically (Stopped 4/29)
+// ============================================================================
+
+print "=== QUERY 8: Tesla Site Detailed Timeline ===";
+silverCommDataSite
+| where siteId == target_tesla_id or siteId == "APPTPO-2410442068"
+| where sourceTimestamp > datetime(2026-04-20)  // 10 days before it stopped
+| summarize 
+    record_count = count(),
+    avg_battery_soc = avg(battery_713_SoC)
+    by siteId, bin(sourceTimestamp, 1d)
+| order by sourceTimestamp desc
+
+
+// ============================================================================
+// QUERY 9: Check Enphase Sites - Ever Had Data?
+// ============================================================================
+
+print "=== QUERY 9: Enphase Sites - Historical Check ===";
+silverCommDataSite
+| where siteId in (target_enphase_ids) 
+    or siteId in (target_app_ids)
+    or siteId contains "5939292"
+    or siteId contains "5792277"
+| summarize 
+    earliest = min(sourceTimestamp),
+    latest = max(sourceTimestamp),
+    total_records = count()
+    by siteId, oem
+| extend never_online = iff(isnull(earliest), true, false)
+| order by never_online desc, latest desc

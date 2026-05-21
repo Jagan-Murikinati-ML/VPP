@@ -1,0 +1,2 @@
+﻿"event_id","site_id","oem_group_id","command","power","dispatch_time","dispatch_status_code","response","event_processed_utc_time","created_at_utc"
+"a818de3e-17a7-41ae-8867-eac0b60a7d26","400012881","DSGS_PACIFIC_GAS_ELECTRIC_CO","DISCHARGE_TO_HOME_AND_GRID","","2026-05-19 23:01:10.000","200","EnphaseControlResponseDto(message=Event created successfully, eventId=5fa45e28-5aa5-4661-b6d0-84b223cb1227, name=Event 202605192301, noOfSites=500, programId=DSGS_Qcells_Pacific_Gas_and_Electric_CA, totalWatts=3553960)","2026-05-18 17:50:24.0021884","2026-05-18 17:50:24.1689509"

@@ -1,0 +1,104 @@
+// ============================================================================
+// Find Examples of Sites with Different OEM Combinations
+// ============================================================================
+
+// ============================================================================
+// QUERY 1: Find Qcells + Tesla sites
+// ============================================================================
+
+print "=== Qcells (Type 0) + Tesla (Type 1) Sites ===";
+
+goldAdtPropertyMinMaxLatestViewV2
+| where Key in ('oemInfo.0.oemName', 'oemInfo.0.oemSiteId', 
+               'oemInfo.1.oemName', 'oemInfo.1.oemSiteId',
+               'siteId')
+| where actionMax != 'Delete'
+| where ModelId startswith 'dtmi:qcells:site'
+| summarize 
+    siteId = take_anyif(valueMax, Key == 'siteId'),
+    type0_oemName = take_anyif(valueMax, Key == 'oemInfo.0.oemName'),
+    type0_oemSiteId = take_anyif(valueMax, Key == 'oemInfo.0.oemSiteId'),
+    type1_oemName = take_anyif(valueMax, Key == 'oemInfo.1.oemName'),
+    type1_oemSiteId = take_anyif(valueMax, Key == 'oemInfo.1.oemSiteId')
+by Id
+| where type0_oemName == 'Qcells' and type1_oemName == 'Tesla'
+| take 5;
+
+
+// ============================================================================
+// QUERY 2: Find Enphase + Tesla sites
+// ============================================================================
+
+print "=== Enphase (Type 0) + Tesla (Type 1) Sites ===";
+
+goldAdtPropertyMinMaxLatestViewV2
+| where Key in ('oemInfo.0.oemName', 'oemInfo.0.oemSiteId', 
+               'oemInfo.1.oemName', 'oemInfo.1.oemSiteId',
+               'siteId')
+| where actionMax != 'Delete'
+| where ModelId startswith 'dtmi:qcells:site'
+| summarize 
+    siteId = take_anyif(valueMax, Key == 'siteId'),
+    type0_oemName = take_anyif(valueMax, Key == 'oemInfo.0.oemName'),
+    type0_oemSiteId = take_anyif(valueMax, Key == 'oemInfo.0.oemSiteId'),
+    type1_oemName = take_anyif(valueMax, Key == 'oemInfo.1.oemName'),
+    type1_oemSiteId = take_anyif(valueMax, Key == 'oemInfo.1.oemSiteId')
+by Id
+| where type0_oemName == 'Enphase' and type1_oemName == 'Tesla'
+| take 5;
+
+
+// ============================================================================
+// QUERY 3: Find SolarEdge + Tesla sites
+// ============================================================================
+
+print "=== SolarEdge (Type 0) + Tesla (Type 1) Sites ===";
+
+goldAdtPropertyMinMaxLatestViewV2
+| where Key in ('oemInfo.0.oemName', 'oemInfo.0.oemSiteId', 
+               'oemInfo.1.oemName', 'oemInfo.1.oemSiteId',
+               'siteId')
+| where actionMax != 'Delete'
+| where ModelId startswith 'dtmi:qcells:site'
+| summarize 
+    siteId = take_anyif(valueMax, Key == 'siteId'),
+    type0_oemName = take_anyif(valueMax, Key == 'oemInfo.0.oemName'),
+    type0_oemSiteId = take_anyif(valueMax, Key == 'oemInfo.0.oemSiteId'),
+    type1_oemName = take_anyif(valueMax, Key == 'oemInfo.1.oemName'),
+    type1_oemSiteId = take_anyif(valueMax, Key == 'oemInfo.1.oemSiteId')
+by Id
+| where type0_oemName == 'SolarEdge' and type1_oemName == 'Tesla'
+| take 5;
+
+
+// ============================================================================
+// QUERY 4: Get FULL details for one example site from each combination
+// ============================================================================
+
+print "=== Full Details for Example Sites ===";
+
+// Pick one site from each combination
+let exampleSites = dynamic([
+    // Will populate after running above queries
+    // "site1_qcells_tesla",
+    // "site2_enphase_tesla",
+    // "site3_solaredge_tesla"
+]);
+
+goldAdtPropertyMinMaxLatestViewV2
+| where actionMax != 'Delete'
+| where ModelId startswith 'dtmi:qcells:site'
+| where Id in (
+    goldAdtPropertyMinMaxLatestViewV2
+    | where Key == 'siteId' 
+    | where valueMax in (exampleSites)
+    | project Id
+)
+| where Key startswith 'oemInfo' 
+    or Key == 'siteId'
+    or Key startswith 'productInfo'
+    or Key startswith 'nameplateInfo'
+    or Key == 'siteName'
+    or Key startswith 'address'
+| project siteId = Id, Key, valueMax
+| order by siteId, Key asc;
