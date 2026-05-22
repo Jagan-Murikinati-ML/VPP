@@ -39,7 +39,34 @@ let oem_data = goldAdtPropertyMinMaxLatestViewV2
 
 
 // ============================================================================
-// CHANGE 2: Modified result_data section (around line 120-145)
+// CHANGE 2: Add Battery Detection (BEFORE oem_data section)
+// Based on Juan Pablo's guidance: Check for battery devices in relationships
+// ============================================================================
+
+// Step 11.5: Detect sites with batteries using Asset Registry
+let sitesWithBattery =
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'  // Battery devices
+    | project batteryTwinId = TwinId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'  // Only sites
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId
+    | extend has_battery = 'Yes'
+; // sitesWithBattery
+
+
+// ============================================================================
+// CHANGE 3: Modified result_data section (around line 120-145)
 // Add Type 1 columns and battery flag to final output
 // ============================================================================
 
@@ -52,6 +79,7 @@ let result_data = site_ids_from_user
      | join kind = leftouter tpo_registered on $left.site_ids == $right.siteId
      | join kind = leftouter installer on $left.site_ids == $right.siteId
      | join kind = leftouter oem_data on $left.site_ids == $right.siteId
+     | join kind = leftouter sitesWithBattery on $left.site_ids == $right.siteId  // ← ADDED
      | distinct site_ids,
                oem_siteId,
                oem_name,
@@ -68,16 +96,12 @@ let result_data = site_ids_from_user
                leap_meter_id = valueMax,
                wMaxRtg = rated_capacity_wMaxrtg,
                system_size_kw,
-               tostring(productInfo_prodCode), 
+               tostring(productInfo_prodCode),
                tostring(productInfo_prodMfr),
                tostring(productInfo_prodType),
                tostring(productInfo_prodName),
                tostring(productInfo_prodSubType),
-               has_battery = case(                          // ← ADDED battery flag
-                   productInfo_prodSubType in ('HybridInverter', 'BatteryInverter'), 'Yes',
-                   isnotempty(productInfo_prodSubType), 'No',
-                   ''
-               ),
+               has_battery = coalesce(has_battery, 'No'),  // ← ADDED (Juan Pablo's method)
                account_number,
                APP_TPO_AccountId = case(account_number like 'APPTPO', replace(@"[^\d]", "", account_number), ""),
                last_data_timestamp,

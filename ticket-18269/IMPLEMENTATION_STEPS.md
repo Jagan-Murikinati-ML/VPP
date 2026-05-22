@@ -2,10 +2,11 @@
 
 ## ✅ **What We Know Now**
 
-1. ✅ **Function Name:** `getAssetOnboarding`
+1. ✅ **Function Name:** `getAssetOnboarding` (from Zahm)
 2. ✅ **Current Type 0 Columns:** `oem_name`, `oem_siteId`
 3. ✅ **Data Source:** `goldAdtPropertyMinMaxLatestViewV2`
 4. ✅ **Test Site:** `100003907` (has Type 1 OEM data)
+5. ✅ **Battery Detection:** Use relationship-based method (from Juan Pablo)
 
 ---
 
@@ -32,8 +33,10 @@ Option C: secondary_oem_name, secondary_oem_siteId
 Option D: Other preference?
 
 Also:
-- Battery flag column: has_battery or battery_flag?
-- Battery logic: Use productInfo_prodSubType (simple) or check device relationships (accurate)?
+- Battery flag column name: has_battery or battery_flag?
+
+Note: Juan Pablo confirmed we should use relationship-based detection
+(check for battery devices in goldAdtTwinEventsLatestV2 + goldAdtAllRelationshipsLatestView)
 
 Thanks!
 ```

@@ -1,0 +1,163 @@
+// ============================================================================
+// Battery Flag Detection Test - Based on Juan Pablo's Guidance
+// ============================================================================
+
+// Juan Pablo's recommendation:
+// 1. Check if site twin is not deleted
+// 2. Find relationships from site to devices
+// 3. Check if device twin is not deleted
+// 4. Check if device ModelId indicates it's a battery
+
+// ============================================================================
+// TEST 1: Find all sites with batteries
+// ============================================================================
+
+print "=== TEST 1: Sites with Batteries ===";
+
+let sitesWithBattery = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'  // Battery devices
+    | project batteryTwinId = TwinId, batteryModelId = ModelId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'  // Only sites
+        | project siteTwinId = TwinId, siteModelId = ModelId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId, batteryModelId
+;
+
+sitesWithBattery
+| take 20;
+
+
+// ============================================================================
+// TEST 2: Check site 100003907 specifically
+// ============================================================================
+
+print "=== TEST 2: Site 100003907 Battery Check ===";
+
+let sitesWithBattery = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId
+;
+
+sitesWithBattery
+| where siteId == "100003907";
+
+// Expected: Should return site 100003907 (we know it has a battery)
+
+
+// ============================================================================
+// TEST 3: Count sites with vs without batteries
+// ============================================================================
+
+print "=== TEST 3: Battery Site Statistics ===";
+
+let sitesWithBattery = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId
+    | extend has_battery = 'Yes'
+;
+
+let allSites = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:site'
+    | project siteId = TwinId
+;
+
+allSites
+| join kind=leftouter (sitesWithBattery) on siteId
+| extend has_battery = coalesce(has_battery, 'No')
+| summarize count() by has_battery;
+
+
+// ============================================================================
+// TEST 4: Compare with productInfo.prodSubType method
+// ============================================================================
+
+print "=== TEST 4: Compare Battery Detection Methods ===";
+
+// Method 1: Juan Pablo's relationship-based method
+let method1_sitesWithBattery = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId
+    | extend method1_battery = 'Yes'
+;
+
+// Method 2: Product info method
+let method2_sitesWithBattery = 
+    goldAdtPropertyMinMaxLatestViewV2
+    | where Key == 'productInfo.prodSubType'
+    | where actionMax != 'Delete'
+    | where valueMax in ('HybridInverter', 'BatteryInverter')
+    | project siteId = Id
+    | extend method2_battery = 'Yes'
+;
+
+// Compare
+let testSites = dynamic(["100003907", "400061892", "100001549"]);
+
+goldAdtTwinEventsLatestV2
+| where Action != 'Delete'
+| where ModelId startswith 'dtmi:qcells:site'
+| where TwinId in (testSites)
+| project siteId = TwinId
+| join kind=leftouter (method1_sitesWithBattery) on siteId
+| join kind=leftouter (method2_sitesWithBattery) on siteId
+| project siteId, 
+         method1_relationship = coalesce(method1_battery, 'No'),
+         method2_productInfo = coalesce(method2_battery, 'No');
+
+// Expected:
+// 100003907: method1=Yes, method2=No (has battery but empty prodSubType)
+// This proves Juan Pablo's method is more accurate!
