@@ -1,0 +1,106 @@
+// ============================================================================
+// MODIFIED getAssetOnboarding Query - Ticket 18269
+// Changes: Add Type 1 OEM columns and battery flag
+// ============================================================================
+
+// NOTE: Only the MODIFIED sections are shown here
+// You need to replace these sections in the original query
+
+// ============================================================================
+// CHANGE 1: Modified oem_data section (around line 102-110)
+// ============================================================================
+
+//Step 12: Fetch Oem data
+let oem_data = goldAdtPropertyMinMaxLatestViewV2
+    | where actionMax != 'Delete'
+    and ModelId == "dtmi:qcells:site:site;1" 
+    and Key in ('oemInfo.0.oemName', 
+               'oemInfo.0.oemSiteId',
+               'oemInfo.1.oemName',           // ← ADDED for Type 1
+               'oemInfo.1.oemSiteId',         // ← ADDED for Type 1
+               'assetRegistrationInfo.accountNumber')
+    | extend oem_name = case(Key == 'oemInfo.0.oemName', valueMax, ""),
+             oem_siteId = case(Key == 'oemInfo.0.oemSiteId', valueMax, ""),
+             type1_oem_name = case(Key == 'oemInfo.1.oemName', valueMax, ""),      // ← ADDED
+             type1_oem_siteId = case(Key == 'oemInfo.1.oemSiteId', valueMax, ""),  // ← ADDED
+             account_number = case(Key == 'assetRegistrationInfo.accountNumber', valueMax, "")
+    | summarize oem_name = any(oem_name), 
+               oem_siteId = any(oem_siteId),
+               type1_oem_name = any(type1_oem_name),        // ← ADDED
+               type1_oem_siteId = any(type1_oem_siteId),    // ← ADDED
+               account_number = any(account_number) by Id
+    | project siteId = Id, 
+             oem_name, 
+             oem_siteId,
+             type1_oem_name,      // ← ADDED
+             type1_oem_siteId,    // ← ADDED
+             account_number
+; //oem_data
+
+
+// ============================================================================
+// CHANGE 2: Modified result_data section (around line 120-145)
+// Add Type 1 columns and battery flag to final output
+// ============================================================================
+
+let result_data = site_ids_from_user
+     | join kind = leftouter siteProperties on $left.site_ids == $right.siteId
+     | join kind = leftouter leap_data on $left.site_ids == $right.siteId
+     | join kind = leftouter (device_data) on siteId
+     | join kind = leftouter (siteData) on $left.site_ids == $right.siteId
+     | join kind = leftouter homeowner on $left.site_ids == $right.siteId
+     | join kind = leftouter tpo_registered on $left.site_ids == $right.siteId
+     | join kind = leftouter installer on $left.site_ids == $right.siteId
+     | join kind = leftouter oem_data on $left.site_ids == $right.siteId
+     | distinct site_ids,
+               oem_siteId,
+               oem_name,
+               type1_oem_name,                // ← ADDED
+               type1_oem_siteId,              // ← ADDED
+               customer_name,
+               customer_email,
+               site_address = customer_address,
+               state,
+               installer_name = partner_company_name,
+               isTPORegistered,
+               isVppRegistered = iff(isempty(isVppRegistered), 'False', isVppRegistered),
+               isLeapRegistered = iff(isempty(valueMax), 'False', 'True'),
+               leap_meter_id = valueMax,
+               wMaxRtg = rated_capacity_wMaxrtg,
+               system_size_kw,
+               tostring(productInfo_prodCode), 
+               tostring(productInfo_prodMfr),
+               tostring(productInfo_prodType),
+               tostring(productInfo_prodName),
+               tostring(productInfo_prodSubType),
+               has_battery = case(                          // ← ADDED battery flag
+                   productInfo_prodSubType in ('HybridInverter', 'BatteryInverter'), 'Yes',
+                   isnotempty(productInfo_prodSubType), 'No',
+                   ''
+               ),
+               account_number,
+               APP_TPO_AccountId = case(account_number like 'APPTPO', replace(@"[^\d]", "", account_number), ""),
+               last_data_timestamp,
+               system_status_1h_online = iif(last_data_timestamp >= ago(1h), "online", "offline")
+ ; result_data
+ | summarize arg_max(last_data_timestamp,*) by site_ids
+
+
+// ============================================================================
+// TESTING: Test the modified query with site 100003907
+// ============================================================================
+
+// After updating the function, run this to test:
+/*
+getAssetOnboarding()
+| where site_ids == "100003907"
+| project site_ids, oem_name, oem_siteId, type1_oem_name, type1_oem_siteId, has_battery
+
+// Expected output:
+// site_ids: 100003907
+// oem_name: Qcells
+// oem_siteId: 100003907
+// type1_oem_name: Qcells
+// type1_oem_siteId: SSMAK9HTBP
+// has_battery: Yes (or No, depending on productInfo_prodSubType)
+*/
