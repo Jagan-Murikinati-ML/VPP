@@ -1,0 +1,246 @@
+// ============================================================================
+// VERIFICATION: Check if Battery Detection is ACCURATE
+// ============================================================================
+
+// We need to verify that sites marked as 'Yes' ACTUALLY have batteries
+// and sites marked as 'No' ACTUALLY don't have batteries
+
+// ============================================================================
+// TEST 1: Verify Site 100003907 (Known to have battery)
+// ============================================================================
+
+print "=== TEST 1: Site 100003907 - Should Have Battery ===";
+
+// Check in function output
+let functionResult = getAssetOnboarding_test()
+| where site_ids == "100003907"
+| project site_ids, has_battery_from_function = has_battery;
+
+// Check actual battery devices for this site
+let actualBatteryCheck = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId, batteryModelId = ModelId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | where Source == "100003907"  // This specific site
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | project siteId, batteryTwinId, batteryModelId;
+
+// Show results
+print "Function says:";
+functionResult;
+
+print "Actual battery devices:";
+actualBatteryCheck;
+
+// Expected: Function says 'Yes' AND we see battery devices
+
+
+// ============================================================================
+// TEST 2: Pick Random Sites and Verify
+// ============================================================================
+
+print "=== TEST 2: Random Sample Verification ===";
+
+// Get 10 sites that function says have batteries
+let sitesWithBatteryFromFunction = getAssetOnboarding_test()
+| where has_battery == 'Yes'
+| take 10
+| project site_ids;
+
+// Check if these sites ACTUALLY have battery devices
+goldAdtTwinEventsLatestV2
+| where Action != 'Delete'
+| where ModelId startswith 'dtmi:qcells:device:batt'
+| project batteryTwinId = TwinId
+| join kind=inner (
+    goldAdtAllRelationshipsLatestView
+    | where Action != 'Delete'
+    | project siteId = Source, batteryTwinId = Target
+) on batteryTwinId
+| join kind=inner sitesWithBatteryFromFunction on $left.siteId == $right.site_ids
+| summarize battery_devices = count() by siteId
+| project siteId, battery_devices, verification = "Has actual battery devices";
+
+// Expected: All 10 sites should show battery devices
+
+
+// ============================================================================
+// TEST 3: Verify Sites Marked as 'No' Don't Have Batteries
+// ============================================================================
+
+print "=== TEST 3: Sites Without Batteries Verification ===";
+
+// Get 10 sites that function says DON'T have batteries
+let sitesWithoutBatteryFromFunction = getAssetOnboarding_test()
+| where has_battery == 'No'
+| take 10
+| project site_ids;
+
+// Check if these sites have any battery devices (they shouldn't)
+let batteriesFound = goldAdtTwinEventsLatestV2
+| where Action != 'Delete'
+| where ModelId startswith 'dtmi:qcells:device:batt'
+| project batteryTwinId = TwinId
+| join kind=inner (
+    goldAdtAllRelationshipsLatestView
+    | where Action != 'Delete'
+    | project siteId = Source, batteryTwinId = Target
+) on batteryTwinId
+| join kind=inner sitesWithoutBatteryFromFunction on $left.siteId == $right.site_ids
+| summarize battery_devices = count() by siteId;
+
+// Show sites that function says 'No' but ACTUALLY have batteries (should be empty)
+sitesWithoutBatteryFromFunction
+| join kind=leftouter batteriesFound on $left.site_ids == $right.siteId
+| extend result = iff(isnotnull(battery_devices), "ERROR: Has battery but marked No", "Correct: No battery")
+| project site_ids, battery_devices, result;
+
+// Expected: All should show "Correct: No battery"
+
+
+// ============================================================================
+// TEST 4: Cross-Check with productInfo Method
+// ============================================================================
+
+print "=== TEST 4: Compare with productInfo Method ===";
+
+// Our method (relationship-based)
+let ourMethod = getAssetOnboarding_test()
+| project site_ids, our_method = has_battery;
+
+// Old method (productInfo-based)
+let oldMethod = goldAdtPropertyMinMaxLatestViewV2
+| where actionMax != 'Delete'
+| where ModelId == "dtmi:qcells:site:site;1"
+| where Key == 'productInfo.prodSubType'
+| where valueMax in ('HybridInverter', 'BatteryInverter')
+| project site_ids = Id, old_method = 'Yes';
+
+// Compare
+ourMethod
+| take 100
+| join kind=leftouter oldMethod on site_ids
+| extend old_method = coalesce(old_method, 'No')
+| where our_method != old_method  // Show differences
+| project site_ids, our_method, old_method, difference = "Methods disagree";
+
+// This will show sites where the two methods give different answers
+// Our method should be MORE accurate (finds more batteries)
+
+
+// ============================================================================
+// TEST 5: Detailed Verification for Specific Sites
+// ============================================================================
+
+print "=== TEST 5: Detailed Check for Specific Sites ===";
+
+let testSites = datatable(site_ids: string, expected_battery: string) [
+    "100003907", "Yes",   // Known to have battery
+    "100001549", "???",   // Unknown
+    "400061892", "???"    // Unknown
+];
+
+// Get function result
+let functionResults = getAssetOnboarding_test()
+| where site_ids in ("100003907", "100001549", "400061892")
+| project site_ids, function_says = has_battery;
+
+// Get actual battery check
+let actualBatteries = goldAdtTwinEventsLatestV2
+| where Action != 'Delete'
+| where ModelId startswith 'dtmi:qcells:device:batt'
+| project batteryTwinId = TwinId
+| join kind=inner (
+    goldAdtAllRelationshipsLatestView
+    | where Action != 'Delete'
+    | project siteId = Source, batteryTwinId = Target
+) on batteryTwinId
+| where siteId in ("100003907", "100001549", "400061892")
+| summarize battery_count = count() by siteId
+| extend actual_has_battery = 'Yes';
+
+// Compare
+testSites
+| join kind=leftouter functionResults on site_ids
+| join kind=leftouter actualBatteries on $left.site_ids == $right.siteId
+| extend actual_has_battery = coalesce(actual_has_battery, 'No')
+| extend match = iff(function_says == actual_has_battery, "✅ MATCH", "❌ MISMATCH")
+| project site_ids, expected_battery, function_says, actual_has_battery, battery_count, match;
+
+
+// ============================================================================
+// TEST 6: Overall Accuracy Check
+// ============================================================================
+
+print "=== TEST 6: Overall Accuracy Statistics ===";
+
+// Get all sites from function
+let allFunctionResults = getAssetOnboarding_test()
+| project site_ids, function_battery = has_battery;
+
+// Get all sites with actual batteries
+let allActualBatteries = goldAdtTwinEventsLatestV2
+| where Action != 'Delete'
+| where ModelId startswith 'dtmi:qcells:device:batt'
+| project batteryTwinId = TwinId
+| join kind=inner (
+    goldAdtAllRelationshipsLatestView
+    | where Action != 'Delete'
+    | project siteId = Source, batteryTwinId = Target
+) on batteryTwinId
+| distinct siteId
+| extend actual_battery = 'Yes';
+
+// Compare
+allFunctionResults
+| join kind=leftouter allActualBatteries on $left.site_ids == $right.siteId
+| extend actual_battery = coalesce(actual_battery, 'No')
+| extend accuracy = case(
+    function_battery == 'Yes' and actual_battery == 'Yes', 'True Positive',
+    function_battery == 'No' and actual_battery == 'No', 'True Negative',
+    function_battery == 'Yes' and actual_battery == 'No', 'False Positive',
+    function_battery == 'No' and actual_battery == 'Yes', 'False Negative',
+    'Unknown'
+)
+| summarize count() by accuracy;
+
+// Expected results:
+// - True Positive: Large number (sites correctly identified as having battery)
+// - True Negative: Large number (sites correctly identified as not having battery)
+// - False Positive: 0 or very small (sites wrongly marked as having battery)
+// - False Negative: 0 or very small (sites wrongly marked as not having battery)
+
+
+// ============================================================================
+// INSTRUCTIONS
+// ============================================================================
+
+/*
+Run these tests in order:
+
+TEST 1: Verify site 100003907
+- Should show function says 'Yes' AND actual battery devices found
+
+TEST 2: Random sample of 'Yes' sites
+- All should have actual battery devices
+
+TEST 3: Random sample of 'No' sites
+- None should have battery devices
+
+TEST 4: Compare with old method
+- May show differences (our method is more accurate)
+
+TEST 5: Specific sites detailed check
+- Should show matches between function and reality
+
+TEST 6: Overall accuracy
+- Should show high True Positive and True Negative
+- Low or zero False Positive and False Negative
+
+If any test shows mismatches, we have a bug to fix!
+*/

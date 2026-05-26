@@ -1,0 +1,156 @@
+// ============================================================================
+// NEW LOGIC ADDED FOR TICKET-18269
+// Only the lines that are NEW or CHANGED
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// CHANGE 1: Add Type 1 OEM Keys to the oem_data section
+// ----------------------------------------------------------------------------
+
+// BEFORE: Only had these keys
+// 'oemInfo.0.oemName', 'oemInfo.0.oemSiteId'
+
+// AFTER: Added Type 1 keys
+let oem_data = goldAdtPropertyMinMaxLatestViewV2
+    | where actionMax != 'Delete'
+    and ModelId == "dtmi:qcells:site:site;1" 
+    and Key in ('oemInfo.0.oemName', 
+               'oemInfo.0.oemSiteId',
+               'oemInfo.1.oemName',           // ← NEW LINE
+               'oemInfo.1.oemSiteId',         // ← NEW LINE
+               'assetRegistrationInfo.accountNumber')
+
+// ----------------------------------------------------------------------------
+// CHANGE 2: Rename Type 0 columns and add Type 1 columns
+// ----------------------------------------------------------------------------
+
+// BEFORE: Just oem_name and oem_siteId
+// | extend oem_name = case(Key == 'oemInfo.0.oemName', valueMax, ""),
+//          oem_siteId = case(Key == 'oemInfo.0.oemSiteId', valueMax, ""),
+
+// AFTER: Renamed Type 0 and added Type 1
+    | extend type0_oem_name = case(Key == 'oemInfo.0.oemName', valueMax, ""),      // ← RENAMED
+             type0_oem_siteId = case(Key == 'oemInfo.0.oemSiteId', valueMax, ""),  // ← RENAMED
+             type1_oem_name = case(Key == 'oemInfo.1.oemName', valueMax, ""),      // ← NEW LINE
+             type1_oem_siteId = case(Key == 'oemInfo.1.oemSiteId', valueMax, ""),  // ← NEW LINE
+             account_number = case(Key == 'assetRegistrationInfo.accountNumber', valueMax, "")
+
+// ----------------------------------------------------------------------------
+// CHANGE 3: Update summarize to include Type 1 columns
+// ----------------------------------------------------------------------------
+
+// BEFORE:
+// | summarize oem_name = any(oem_name), 
+//            oem_siteId = any(oem_siteId),
+//            account_number = any(account_number) by Id
+
+// AFTER: Added Type 1 aggregations
+    | summarize type0_oem_name = any(type0_oem_name),      // ← RENAMED
+               type0_oem_siteId = any(type0_oem_siteId),    // ← RENAMED
+               type1_oem_name = any(type1_oem_name),        // ← NEW LINE
+               type1_oem_siteId = any(type1_oem_siteId),    // ← NEW LINE
+               account_number = any(account_number) by Id
+
+// ----------------------------------------------------------------------------
+// CHANGE 4: Update project to include Type 1 columns
+// ----------------------------------------------------------------------------
+
+// BEFORE:
+// | project siteId = Id, oem_name, oem_siteId, account_number
+
+// AFTER:
+    | project siteId = Id, 
+             type0_oem_name,      // ← RENAMED
+             type0_oem_siteId,    // ← RENAMED
+             type1_oem_name,      // ← NEW LINE
+             type1_oem_siteId,    // ← NEW LINE
+             account_number
+; //oem_data
+
+
+// ============================================================================
+// CHANGE 5: ADD COMPLETELY NEW SECTION - Battery Detection
+// This is inserted BEFORE the result_data section
+// ============================================================================
+
+// NEW SECTION - Battery Detection using Juan Pablo's Relationship Method
+let sitesWithBattery = 
+    // Step 1: Find all battery device twins (not deleted)
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'  // Filter for battery devices
+    | project batteryTwinId = TwinId                      // Get battery device IDs
+    
+    // Step 2: Find which sites these batteries are connected to
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'                        // Only active relationships
+        | project siteId = Source,                        // Site that owns the device
+                 batteryTwinId = Target                   // Battery device
+    ) on batteryTwinId                                    // Join on battery device ID
+    
+    // Step 3: Verify the site twin exists and is not deleted
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'     // Only site twins
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId                // Join to verify site exists
+    
+    // Step 4: Get unique list of sites with batteries
+    | distinct siteId
+    | extend has_battery = 'Yes'                          // Mark as having battery
+; // sitesWithBattery
+
+
+// ============================================================================
+// CHANGE 6: Add battery join to result_data
+// ============================================================================
+
+// BEFORE: Just had joins for other data sources
+// let result_data = site_ids_from_user
+//      | join kind = leftouter siteProperties on ...
+//      | join kind = leftouter oem_data on ...
+
+// AFTER: Added battery join
+let result_data = site_ids_from_user
+     | join kind = leftouter siteProperties on $left.site_ids == $right.siteId
+     | join kind = leftouter leap_data on $left.site_ids == $right.siteId
+     | join kind = leftouter (device_data) on siteId
+     | join kind = leftouter (siteData) on $left.site_ids == $right.siteId
+     | join kind = leftouter homeowner on $left.site_ids == $right.siteId
+     | join kind = leftouter tpo_registered on $left.site_ids == $right.siteId
+     | join kind = leftouter installer on $left.site_ids == $right.siteId
+     | join kind = leftouter oem_data on $left.site_ids == $right.siteId
+     | join kind = leftouter sitesWithBattery on $left.site_ids == $right.siteId  // ← NEW LINE
+
+
+// ============================================================================
+// CHANGE 7: Update distinct to include new columns
+// ============================================================================
+
+// BEFORE:
+// | distinct site_ids,
+//           oem_siteId,
+//           oem_name,
+
+// AFTER: Renamed Type 0 and added Type 1 + battery
+     | distinct site_ids,
+               type0_oem_siteId,              // ← RENAMED (was oem_siteId)
+               type0_oem_name,                // ← RENAMED (was oem_name)
+               type1_oem_name,                // ← NEW LINE
+               type1_oem_siteId,              // ← NEW LINE
+               // ... (other existing columns)
+               has_battery = coalesce(has_battery, 'No'),  // ← NEW LINE (defaults to 'No')
+
+
+// ============================================================================
+// SUMMARY OF CHANGES:
+// ============================================================================
+// 1. Added 2 new keys to fetch: 'oemInfo.1.oemName', 'oemInfo.1.oemSiteId'
+// 2. Renamed: oem_name → type0_oem_name, oem_siteId → type0_oem_siteId
+// 3. Added: type1_oem_name, type1_oem_siteId (extracted from oemInfo.1)
+// 4. Added: sitesWithBattery section (30 lines) using relationship-based detection
+// 5. Added: join to sitesWithBattery
+// 6. Added: has_battery column (defaults to 'No' if not in sitesWithBattery)
+// ============================================================================

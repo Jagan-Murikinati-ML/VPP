@@ -1,0 +1,158 @@
+// ============================================================================
+// VERIFICATION TESTS - Battery Detection Accuracy
+// Using specific site IDs provided by user
+// ============================================================================
+
+// TEST 1: Verify sites that SHOULD HAVE batteries
+// ============================================================================
+
+print "=== TEST 1: Sites That SHOULD Have Batteries ===";
+
+    let sitesExpectedToHaveBattery = datatable(site_ids: string) [
+        "400005785",
+        "400005781",
+        "400005778"
+    ];
+
+    // Check function output
+    let functionResults = getAssetOnboarding_test()
+    | where site_ids in ("400005785", "400005781", "400005778")
+    | project site_ids, function_says = has_battery;
+
+    // Check actual battery devices
+    let actualBatteries = goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId, batteryModelId = ModelId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | where siteId in ("400005785", "400005781", "400005778")
+    | summarize battery_count = count(), battery_models = make_set(batteryModelId) by siteId
+    | extend actual_battery = 'Yes';
+
+    // Compare
+    sitesExpectedToHaveBattery
+    | join kind=leftouter functionResults on site_ids
+    | join kind=leftouter actualBatteries on $left.site_ids == $right.siteId
+    | extend actual_battery = coalesce(actual_battery, 'No')
+    | extend result = case(
+        function_says == 'Yes' and actual_battery == 'Yes', '✅ CORRECT - Has battery',
+        function_says == 'No' and actual_battery == 'Yes', '❌ ERROR - Missed battery',
+        function_says == 'Yes' and actual_battery == 'No', '❌ ERROR - False positive',
+        '❓ Unknown'
+    )
+    | project site_ids, function_says, actual_battery, battery_count, result;
+
+
+// ============================================================================
+// TEST 2: Verify sites that SHOULD NOT have batteries
+// ============================================================================
+
+print "=== TEST 2: Sites That Should NOT Have Batteries ===";
+
+let sitesExpectedNoBattery = datatable(site_ids: string) [
+    "400002401",
+    "100000554",
+    "400003437"
+];
+
+// Check function output
+let functionResults2 = getAssetOnboarding_test()
+| where site_ids in ("400002401", "100000554", "400003437")
+| project site_ids, function_says = has_battery;
+
+// Check actual battery devices
+let actualBatteries2 = goldAdtTwinEventsLatestV2
+| where Action != 'Delete'
+| where ModelId startswith 'dtmi:qcells:device:batt'
+| project batteryTwinId = TwinId
+| join kind=inner (
+    goldAdtAllRelationshipsLatestView
+    | where Action != 'Delete'
+    | project siteId = Source, batteryTwinId = Target
+) on batteryTwinId
+| where siteId in ("400002401", "100000554", "400003437")
+| summarize battery_count = count() by siteId
+| extend actual_battery = 'Yes';
+
+// Compare
+sitesExpectedNoBattery
+| join kind=leftouter functionResults2 on site_ids
+| join kind=leftouter actualBatteries2 on $left.site_ids == $right.siteId
+| extend actual_battery = coalesce(actual_battery, 'No')
+| extend result = case(
+    function_says == 'No' and actual_battery == 'No', '✅ CORRECT - No battery',
+    function_says == 'Yes' and actual_battery == 'No', '❌ ERROR - False positive',
+    function_says == 'No' and actual_battery == 'Yes', '❌ ERROR - Missed battery',
+    '❓ Unknown'
+)
+| project site_ids, function_says, actual_battery, battery_count, result;
+
+
+// ============================================================================
+// TEST 3: Deep dive on all 6 test sites
+// ============================================================================
+
+print "=== TEST 3: Deep Dive - Battery Details for All Test Sites ===";
+
+let testSites = datatable(site_ids: string, expected: string) [
+    "400005785", "Yes",
+    "400005781", "Yes",
+    "400005778", "Yes",
+    "400002401", "No",
+    "100000554", "No",
+    "400003437", "No"
+];
+
+// Get function result
+let functionData = getAssetOnboarding_test()
+| where site_ids in ("400005785", "400005781", "400005778", "400002401", "100000554", "400003437")
+| project site_ids, function_battery = has_battery, productInfo_prodSubType, wMaxRtg;
+
+// Get actual battery devices with details
+let batteryDetails = goldAdtTwinEventsLatestV2
+| where Action != 'Delete'
+| where ModelId startswith 'dtmi:qcells:device:batt'
+| project batteryTwinId = TwinId, batteryModelId = ModelId
+| join kind=inner (
+    goldAdtAllRelationshipsLatestView
+    | where Action != 'Delete'
+    | project siteId = Source, batteryTwinId = Target, relationshipName = Name
+) on batteryTwinId
+| where siteId in ("400005785", "400005781", "400005778", "400002401", "100000554", "400003437")
+| summarize battery_count = count(), battery_models = make_set(batteryModelId) by siteId
+| extend actual_battery = 'Yes';
+
+// Compare all
+testSites
+| join kind=leftouter functionData on site_ids
+| join kind=leftouter batteryDetails on $left.site_ids == $right.siteId
+| extend actual_battery = coalesce(actual_battery, 'No')
+| extend match = iff(function_battery == actual_battery, '✅ MATCH', '❌ MISMATCH')
+| project site_ids, expected, function_battery, actual_battery, battery_count, battery_models, 
+         productInfo_prodSubType, wMaxRtg, match
+| order by expected desc, site_ids asc;
+
+
+// ============================================================================
+// EXPECTED RESULTS
+// ============================================================================
+
+/*
+TEST 1 - Should show:
+400005785 | Yes | Yes | battery_count > 0 | ✅ CORRECT
+400005781 | Yes | Yes | battery_count > 0 | ✅ CORRECT
+400005778 | Yes | Yes | battery_count > 0 | ✅ CORRECT
+
+TEST 2 - Should show:
+400002401 | No | No | (empty) | ✅ CORRECT
+100000554 | No | No | (empty) | ✅ CORRECT
+400003437 | No | No | (empty) | ✅ CORRECT
+
+TEST 3 - Should show all ✅ MATCH
+
+If you see any ❌ MISMATCH or ❌ ERROR, then there's a bug!
+*/

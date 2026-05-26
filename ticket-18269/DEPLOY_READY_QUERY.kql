@@ -1,0 +1,187 @@
+.create-or-alter function getAssetOnboarding() {
+    // Step 1: Retrieve site IDs for the given user and expand the dynamic list; cast each to string
+    let site_ids_from_user = //getCurrentUserSiteMapping(inputUserId);
+        silverUserEvents
+            | join kind=inner (goldUserGroupToUserMapping | where isingroup > 0) on $left.user_id == $right.user_ids
+            | join kind=inner(goldUserGroupToResourceGroupMapping | where isingroup > 0) on $left.user_group_id == $right.user_group_id
+            | join kind=inner(goldResourceGroupToSiteMapping | where isingroup > 0) on $left.resource_group_ids == $right.resource_group_id
+            | join kind=inner goldAdtPropertySites on $left.site_ids == $right.siteId
+            | distinct site_ids
+    ;
+    let siteIdsList = toscalar(site_ids_from_user | summarize make_list(site_ids))
+    ; //siteIdsList
+    // Step 2: Identify VPP registered sites using the expanded list
+    let siteProperties =
+        getStackedValuesForSites(
+            inputSiteIds=siteIdsList
+            ,inputKeys=dynamic(['isVppRegistered','address.streetName', 'address.city', 'address.stateProvince', 'address.zipPostalCode'])
+        )
+        | summarize key_value_dict = make_bag(pack(Key, Value)) by siteId
+        | evaluate bag_unpack(key_value_dict)
+        | project siteId, isVppRegistered
+            ,customer_address = strcat(['address.streetName']," ", ['address.city']," ",['address.stateProvince']," ",['address.zipPostalCode'])
+            ,state = ['address.stateProvince']
+    ;
+    // siteProperties
+    let siteData = silverCommDataSite
+    | where siteId in (siteIdsList)
+    | summarize
+        last_data_timestamp = max(sourceTimestamp)
+      by siteId, oem
+    ;
+    let leap_data =
+        goldAdtPropertyMinMaxLatestViewV2
+        | where Key == 'meterId' and ModelId startswith 'dtmi:qcells:contract:leapContract;1' and tolower(actionMax) != 'delete'
+        | join kind=inner (
+            goldAdtAllRelationshipsLatestView
+            | where tolower(Action) != 'delete'
+            | project siteId = Source, Target
+        ) on $left.Id == $right.Target
+        | distinct valueMax, siteId
+    ; //leap_data
+    let paginatedSiteIdsList = toscalar(siteIdsList)
+    ;
+    //let siteIdsList = ParseInputSiteIds(paginatedSiteIdsList);
+    let connectedIds = GetRealtionshipConnectedIds(paginatedSiteIdsList)
+    ; //connectedIds;
+    // Step 7: Retrieve device data for system size and rated capacity
+    //Get device_info
+    let device_info = goldAdtPropertyDevices
+    | join kind=inner (connectedIds) on $left.Id == $right.TargetId
+    | project Id, SiteId, ModelId, TargetId, nameplateInfo, productInfo, couplingType
+    ;//device_info;
+    let latest_device = device_info
+     | join kind=inner goldAdtPropertyMinMaxLatestViewV2 on $left.TargetId == $right.Id
+     ; //latest_device  //| where tolower(Key) contains ""rtg"" | distinct Key
+    //Get Battery Size Info
+    let bat_system_size = // no longer pulled from device (battery) info, but from SystemInfo model
+        goldAdtPropertyMinMaxLatestViewV2
+        | join kind = inner (connectedIds) on $left.Id == $right.TargetId
+        | summarize systemInfoSize = sum(iif(ModelId startswith "dtmi:qcells:systemInfo:defaultSystemInfo" and Key == 'systemSizeKw', todouble(valueMax), 0.0)) by SiteId
+        | project SiteId, Key = 'system_info_size', Value = todouble(systemInfoSize)
+    ;
+    // bat_system_size;
+   //Get rated_capacity
+   let rated_capacity = latest_device //wMaxRtg
+    | where ModelId1 == 'dtmi:qcells:device:inverter;1'
+    | extend productInfo_prodCode = productInfo['prodCode'],
+             productInfo_prodType = productInfo['prodType'],
+             productInfo_prodName = productInfo['prodName'],
+             productInfo_prodMfr  = productInfo['prodMfr'],
+             productInfo_prodSubType  = productInfo['prodSubType']//;rated_capacity
+    | project productInfo_prodCode, productInfo_prodMfr,productInfo_prodType,productInfo_prodName,productInfo_prodSubType,Key,SiteId,valueMax
+    | summarize make_bag(bag_pack('productInfo_prodCode', productInfo_prodCode,
+                                 'productInfo_prodMfr', productInfo_prodMfr,
+                                 'productInfo_prodType', productInfo_prodType,
+                                 'productInfo_prodName', productInfo_prodName,
+                                 'productInfo_prodSubType', productInfo_prodSubType
+                                 )),
+    rated_capacity_wMaxrtg = minif(valueMax,Key == 'nameplateInfo.wMaxRtg') by SiteId
+    | evaluate bag_unpack(bag_)
+    | project SiteId, tostring(rated_capacity_wMaxrtg), productInfo_prodCode, productInfo_prodMfr,productInfo_prodType,productInfo_prodName,productInfo_prodSubType
+    ;
+    // Join the two results to get one row per device
+    let device_data = bat_system_size
+        | join kind=rightouter (rated_capacity) on SiteId
+        | project siteId = SiteId, system_size_kw = Value, rated_capacity_wMaxrtg, productInfo_prodCode,
+        productInfo_prodMfr,productInfo_prodType,productInfo_prodName,productInfo_prodSubType;
+    // device_data;
+    //Step 8: Fetch Homeowner Data
+    let homeowner =  getStackedValuesForRelatedModels(inputSiteIds = siteIdsList,
+        inputKeys=dynamic(['firstName', 'lastName', 'contact.email']),
+        inputShortModel= ('dtmi:qcells:user:homeowner'))
+        | summarize key_value_dict = make_bag(pack(Key, Value)) by siteId, ActionTime
+        | evaluate bag_unpack(key_value_dict)
+        | summarize arg_max(ActionTime, *) by siteId
+        | project siteId, customer_name = strcat(['firstName'], " " , ['lastName']), customer_email = ['contact.email']
+                // ,customer_address = strcat(['address.streetName'],"" "", ['address.city'],"" "",['address.stateProvince'],"" "",['address.zipPostalCode'])
+        ; //homeowner
+    //Step 9: Fetch TPO Registered
+    let tpo_registered =  getStackedValuesForRelatedModels(inputSiteIds = siteIdsList,
+        inputKeys=dynamic(['customerFinanceType']),
+        inputShortModel= ('dtmi:qcells:user:homeowner'))
+        | summarize key_value_dict = make_bag(pack(Key, Value)) by siteId, ActionTime
+        | evaluate bag_unpack(key_value_dict)
+        | summarize arg_max(ActionTime, *) by siteId
+        | project siteId, isTPORegistered = iff(['customerFinanceType'] == 'TPO', "True", "False")
+        ; //tpo_registered
+    //Step 10: Fetch Installer Data
+    let installer = getStackedValuesForRelatedModels(inputSiteIds = siteIdsList,
+        inputKeys=dynamic(['contact.company']),
+        inputShortModel= ('dtmi:qcells:user:installer'))
+        | summarize key_value_dict = make_bag(pack(Key, Value)) by siteId, ActionTime
+        | evaluate bag_unpack(key_value_dict)
+        | summarize arg_max(ActionTime, *) by siteId
+        | project siteId, partner_company_name = ['contact.company']
+        ; //installer
+    //Step 11: Fetch Battery Flag (NEW - Juan Pablo's method)
+    let sitesWithBattery =
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:device:batt'
+        | project batteryTwinId = TwinId
+        | join kind=inner (
+            goldAdtAllRelationshipsLatestView
+            | where Action != 'Delete'
+            | project siteId = Source, batteryTwinId = Target
+        ) on batteryTwinId
+        | join kind=inner (
+            goldAdtTwinEventsLatestV2
+            | where Action != 'Delete'
+            | where ModelId startswith 'dtmi:qcells:site'
+            | project siteTwinId = TwinId
+        ) on $left.siteId == $right.siteTwinId
+        | distinct siteId
+        | extend has_battery = 'Yes';
+    //Step 12: Fetch Oem data
+    let oem_data = goldAdtPropertyMinMaxLatestViewV2
+            | where actionMax != 'Delete'
+            and ModelId == "dtmi:qcells:site:site;1" and Key in ('oemInfo.0.oemName', 'oemInfo.0.oemSiteId', 'oemInfo.1.oemName', 'oemInfo.1.oemSiteId', 'assetRegistrationInfo.accountNumber')
+            | extend type0_oem_name = case(Key == 'oemInfo.0.oemName', valueMax, ""),
+                     type0_oem_siteId = case(Key == 'oemInfo.0.oemSiteId', valueMax, ""),
+                     type1_oem_name = case(Key == 'oemInfo.1.oemName', valueMax, ""),
+                     type1_oem_siteId = case(Key == 'oemInfo.1.oemSiteId', valueMax, ""),
+                     account_number = case(Key == 'assetRegistrationInfo.accountNumber', valueMax, "")
+            | summarize type0_oem_name = any(type0_oem_name), type0_oem_siteId = any(type0_oem_siteId), type1_oem_name = any(type1_oem_name), type1_oem_siteId = any(type1_oem_siteId), account_number = any(account_number) by Id
+            | project siteId = Id, type0_oem_name, type0_oem_siteId, type1_oem_name, type1_oem_siteId, account_number
+        ; //oem_data
+    // Step 11: Combine all data from the different sources
+    let result_data = site_ids_from_user
+         | join kind = leftouter siteProperties on $left.site_ids == $right.siteId
+         | join kind = leftouter leap_data on $left.site_ids == $right.siteId
+         | join kind = leftouter (device_data) on siteId
+         | join kind = leftouter (siteData) on $left.site_ids == $right.siteId
+         | join kind = leftouter homeowner on $left.site_ids == $right.siteId
+         | join kind = leftouter tpo_registered on $left.site_ids == $right.siteId
+         | join kind = leftouter installer on $left.site_ids == $right.siteId
+         | join kind = leftouter oem_data on $left.site_ids == $right.siteId
+         | join kind = leftouter sitesWithBattery on $left.site_ids == $right.siteId
+         //| join kind=leftouter rated_capacity on $left.site_ids == $right.SiteId
+         | distinct site_ids,
+                   type0_oem_siteId,
+                   type0_oem_name,
+                   type1_oem_name,
+                   type1_oem_siteId,
+                   customer_name,
+                   customer_email,
+                   site_address = customer_address,
+                   state,
+                   installer_name = partner_company_name,
+                   isTPORegistered,
+                   isVppRegistered = iff(isempty(isVppRegistered), 'False', isVppRegistered),
+                   isLeapRegistered = iff(isempty(valueMax), 'False', 'True'),
+                   leap_meter_id = valueMax,
+                   wMaxRtg = rated_capacity_wMaxrtg,
+                   system_size_kw,
+                   tostring(productInfo_prodCode), tostring(productInfo_prodMfr),
+                   tostring(productInfo_prodType),tostring(productInfo_prodName),
+                   tostring(productInfo_prodSubType),
+                   has_battery = coalesce(has_battery, 'No'),
+                   account_number,
+                   APP_TPO_AccountId = case(account_number like 'APPTPO', replace(@"[^\d]", "", account_number), ""),
+                   last_data_timestamp,
+                   system_status_1h_online = iif(last_data_timestamp >= ago(1h), "online", "offline")
+     ; result_data
+     //| where isLeapRegistered == True or isVppRegistered == True
+     | summarize arg_max(last_data_timestamp,*) by site_ids
+}

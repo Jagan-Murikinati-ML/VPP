@@ -10,28 +10,29 @@
 // CHANGE 1: Modified oem_data section (around line 102-110)
 // ============================================================================
 
-//Step 12: Fetch Oem data
+//Step 12: Fetch Oem data (UPDATED per Shuai's requirements)
+// Shuai requested: type0_oem_name, type0_oem_siteId, type1_oem_name, type1_oem_siteId
 let oem_data = goldAdtPropertyMinMaxLatestViewV2
     | where actionMax != 'Delete'
-    and ModelId == "dtmi:qcells:site:site;1" 
-    and Key in ('oemInfo.0.oemName', 
+    and ModelId == "dtmi:qcells:site:site;1"
+    and Key in ('oemInfo.0.oemName',
                'oemInfo.0.oemSiteId',
                'oemInfo.1.oemName',           // ← ADDED for Type 1
                'oemInfo.1.oemSiteId',         // ← ADDED for Type 1
                'assetRegistrationInfo.accountNumber')
-    | extend oem_name = case(Key == 'oemInfo.0.oemName', valueMax, ""),
-             oem_siteId = case(Key == 'oemInfo.0.oemSiteId', valueMax, ""),
+    | extend type0_oem_name = case(Key == 'oemInfo.0.oemName', valueMax, ""),      // ← RENAMED from oem_name
+             type0_oem_siteId = case(Key == 'oemInfo.0.oemSiteId', valueMax, ""),  // ← RENAMED from oem_siteId
              type1_oem_name = case(Key == 'oemInfo.1.oemName', valueMax, ""),      // ← ADDED
              type1_oem_siteId = case(Key == 'oemInfo.1.oemSiteId', valueMax, ""),  // ← ADDED
              account_number = case(Key == 'assetRegistrationInfo.accountNumber', valueMax, "")
-    | summarize oem_name = any(oem_name), 
-               oem_siteId = any(oem_siteId),
+    | summarize type0_oem_name = any(type0_oem_name),      // ← RENAMED
+               type0_oem_siteId = any(type0_oem_siteId),    // ← RENAMED
                type1_oem_name = any(type1_oem_name),        // ← ADDED
                type1_oem_siteId = any(type1_oem_siteId),    // ← ADDED
                account_number = any(account_number) by Id
-    | project siteId = Id, 
-             oem_name, 
-             oem_siteId,
+    | project siteId = Id,
+             type0_oem_name,      // ← RENAMED
+             type0_oem_siteId,    // ← RENAMED
              type1_oem_name,      // ← ADDED
              type1_oem_siteId,    // ← ADDED
              account_number
@@ -81,8 +82,8 @@ let result_data = site_ids_from_user
      | join kind = leftouter oem_data on $left.site_ids == $right.siteId
      | join kind = leftouter sitesWithBattery on $left.site_ids == $right.siteId  // ← ADDED
      | distinct site_ids,
-               oem_siteId,
-               oem_name,
+               type0_oem_siteId,              // ← RENAMED (was oem_siteId)
+               type0_oem_name,                // ← RENAMED (was oem_name)
                type1_oem_name,                // ← ADDED
                type1_oem_siteId,              // ← ADDED
                customer_name,

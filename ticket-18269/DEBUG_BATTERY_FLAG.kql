@@ -1,0 +1,246 @@
+// ============================================================================
+// DEBUG: Battery Flag - Check Why All Sites Show 'Yes'
+// ============================================================================
+
+// TEST 1: How many sites have batteries?
+print "=== TEST 1: Count of Sites With Batteries ===";
+
+let sitesWithBattery = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId
+    | extend has_battery = 'Yes';
+
+sitesWithBattery
+| summarize count();
+
+// Expected: Should be LESS than total sites, not all sites
+
+
+// ============================================================================
+// TEST 2: Sample of sites WITH batteries
+// ============================================================================
+
+print "=== TEST 2: Sample Sites With Batteries ===";
+
+let sitesWithBattery = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId
+    | extend has_battery = 'Yes';
+
+sitesWithBattery
+| take 20;
+
+
+// ============================================================================
+// TEST 3: Total sites vs sites with batteries
+// ============================================================================
+
+print "=== TEST 3: Total Sites vs Sites With Batteries ===";
+
+let allSites = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:site'
+    | project siteId = TwinId
+    | distinct siteId;
+
+let sitesWithBattery = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId
+    | extend has_battery = 'Yes';
+
+print "Total Sites:", toscalar(allSites | count);
+print "Sites With Batteries:", toscalar(sitesWithBattery | count);
+
+
+// ============================================================================
+// TEST 4: Check if coalesce is working correctly
+// ============================================================================
+
+print "=== TEST 4: Test coalesce Logic ===";
+
+let testSites = datatable(site_ids: string) [
+    "100003907",  // Known to have battery
+    "100001549",  // Unknown
+    "999999999"   // Fake site (definitely no battery)
+];
+
+let sitesWithBattery = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId
+    | extend has_battery = 'Yes';
+
+testSites
+| join kind=leftouter sitesWithBattery on $left.site_ids == $right.siteId
+| extend has_battery_final = coalesce(has_battery, 'No')
+| project site_ids, has_battery, has_battery_final;
+
+// Expected:
+// 100003907 -> Yes
+// 100001549 -> No (or Yes if it has battery)
+// 999999999 -> No
+
+
+// ============================================================================
+// TEST 5: Check the actual getAssetOnboarding output
+// ============================================================================
+
+print "=== TEST 5: Sample Output From getAssetOnboarding ===";
+
+getAssetOnboarding()
+| take 100
+| summarize count() by has_battery;
+
+// If this shows:
+// - has_battery='Yes', count=100  <- BUG! All sites showing Yes
+// - has_battery='Yes', count=50 and has_battery='No', count=50  <- GOOD! Mixed results
+
+
+// ============================================================================
+// TEST 6: Check for data type issues
+// ============================================================================
+
+print "=== TEST 6: Check Data Types ===";
+
+let sitesWithBattery = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId;
+
+sitesWithBattery
+| take 1
+| getschema;
+
+// Check if siteId is string or different type
+
+
+// ============================================================================
+// TEST 7: Debug the join condition
+// ============================================================================
+
+print "=== TEST 7: Check Join Matching ===";
+
+let sampleSites = datatable(site_ids: string) [
+    "100003907",
+    "100001549"
+];
+
+let sitesWithBattery = 
+    goldAdtTwinEventsLatestV2
+    | where Action != 'Delete'
+    | where ModelId startswith 'dtmi:qcells:device:batt'
+    | project batteryTwinId = TwinId
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where Action != 'Delete'
+        | project siteId = Source, batteryTwinId = Target
+    ) on batteryTwinId
+    | join kind=inner (
+        goldAdtTwinEventsLatestV2
+        | where Action != 'Delete'
+        | where ModelId startswith 'dtmi:qcells:site'
+        | project siteTwinId = TwinId
+    ) on $left.siteId == $right.siteTwinId
+    | distinct siteId
+    | extend has_battery = 'Yes';
+
+sampleSites
+| join kind=leftouter sitesWithBattery on $left.site_ids == $right.siteId
+| project site_ids, siteId, has_battery, 
+         match_check = iff(site_ids == siteId, "Match", "No Match");
+
+// This will show if the join is matching correctly
+
+
+// ============================================================================
+// INSTRUCTIONS
+// ============================================================================
+
+/*
+Run these tests in order:
+
+1. TEST 1: Should show count < total sites
+2. TEST 2: Should show sample of sites with batteries
+3. TEST 3: Should show total sites > sites with batteries
+4. TEST 4: Should show mixed Yes/No results
+5. TEST 5: Should show breakdown of Yes vs No in actual function
+6. TEST 6: Check data types match
+7. TEST 7: Check if join is working correctly
+
+If TEST 5 shows ALL sites as 'Yes', then there's a bug.
+
+Possible bugs:
+- Join condition is wrong
+- Data type mismatch (siteId vs site_ids)
+- coalesce() is not working
+- The distinct is causing issues
+*/
