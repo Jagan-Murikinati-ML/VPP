@@ -1,0 +1,94 @@
+// ============================================================================
+// Test Modified getAssetOnboarding Function
+// Ticket: 18269
+// ============================================================================
+
+// ============================================================================
+// TEST 1: Check site 100003907 (has Type 1 OEM data)
+// ============================================================================
+
+getAssetOnboarding()
+| where site_ids == "100003907"
+| project 
+    site_ids,
+    oem_name,
+    oem_siteId,
+    type1_oem_name,        // Should be: Qcells
+    type1_oem_siteId,      // Should be: SSMAK9HTBP
+    has_battery,           // Should be: Yes
+    productInfo_prodSubType,
+    customer_name,
+    state
+
+
+// ============================================================================
+// TEST 2: Check a site without Type 1 OEM (most sites)
+// ============================================================================
+
+getAssetOnboarding()
+| where site_ids == "400061892"  // Tesla site
+| project 
+    site_ids,
+    oem_name,
+    oem_siteId,
+    type1_oem_name,        // Should be: empty or blank
+    type1_oem_siteId,      // Should be: empty or blank
+    has_battery,           // Should be: Yes (Tesla Powerwall)
+    productInfo_prodSubType
+
+
+// ============================================================================
+// TEST 3: Count sites by Type 1 OEM presence
+// ============================================================================
+
+getAssetOnboarding()
+| summarize count() by has_type1 = isnotempty(type1_oem_name)
+| order by has_type1 desc
+
+// Expected:
+// has_type1=false: ~60,000+ sites (most sites)
+// has_type1=true: ~500-600 sites (sites with Type 1)
+
+
+// ============================================================================
+// TEST 4: Count sites by battery flag
+// ============================================================================
+
+getAssetOnboarding()
+| summarize count() by has_battery
+| order by has_battery
+
+// Expected:
+// Yes: Sites with HybridInverter or BatteryInverter
+// No: Sites with other inverter types
+// (empty): Sites without product info
+
+
+// ============================================================================
+// TEST 5: Sites with both Type 0 and Type 1 OEM
+// ============================================================================
+
+getAssetOnboarding()
+| where isnotempty(type1_oem_name)
+| project 
+    site_ids,
+    oem_name,           // Type 0
+    type1_oem_name,     // Type 1
+    has_battery
+| take 20
+
+// Expected: Should show sites with different OEM combinations
+// e.g., Qcells + Tesla, Enphase + Tesla, etc.
+
+
+// ============================================================================
+// TEST 6: Verify all expected columns exist
+// ============================================================================
+
+getAssetOnboarding()
+| take 1
+| getschema
+| where ColumnName in ('type1_oem_name', 'type1_oem_siteId', 'has_battery')
+| project ColumnName, ColumnType
+
+// Expected: All 3 new columns should appear with type 'string'
