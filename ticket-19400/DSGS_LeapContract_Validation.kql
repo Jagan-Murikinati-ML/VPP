@@ -1,0 +1,133 @@
+// ============================================================================
+// TICKET 19400: DSGS Site List Validation - Leap Contract in Asset Registry
+// ============================================================================
+// Purpose: Validate that all 8,188 enrolled DSGS sites (May 2026) have Leap Contracts in Asset Registry
+// Date: 2026-05-29
+// Author: Jagan Murikinati
+//
+// Task: Compare enrolled site list against Asset Registry to find sites missing Leap Contracts
+// Reference CSV: leap_meters_export_05282026.csv (8,188 sites)
+// ============================================================================
+
+// ============================================================================
+// STEP 1: Define Enrolled DSGS Site List from CSV (8,188 sites)
+// ============================================================================
+// Source: leap_meters_export_05282026.csv
+// Column: "Asset Registry Site ID (partner_reference)"
+// Total: 8,188 unique site IDs
+// Format: 7,990 sites in 400-series, 196 sites in 100-series, 2 other series
+
+// Load the enrolled site IDs from the generated array file
+// This is created by running: python parse_enrolled_sites.py
+// File: enrolled_sites_kql_array.txt
+
+// NOTE: Due to KQL dynamic array size limits, this query will be split into batches
+// For now, we're including the full array - if it fails due to size, we'll batch it
+
+let enrolled_dsgs_sites_table = datatable(siteId:string) [
+    // Paste all 8,188 site IDs here - one per line
+    // Generated from: parse_enrolled_sites.py
+    // Format: "siteId",
+    //
+    // INSTRUCTIONS: Copy the site IDs from enrolled_sites_kql_array.txt
+    // OR use a smaller sample for testing first
+    //
+    // For full validation, uncomment and paste all 8,188 IDs below:
+    // Copy from the Python script output OR from enrolled_sites_kql_array.txt
+];
+
+// ============================================================================
+// STEP 2: Fetch Sites with Leap Contracts from Asset Registry
+// ============================================================================
+// Query goldAdtPropertyMinMaxLatestViewV2 for Leap Contract meter IDs
+// Join with goldAdtAllRelationshipsLatestView to get the linked siteIds
+
+let ar_sites_with_leap =
+    goldAdtPropertyMinMaxLatestViewV2
+    | where Key == 'meterId'
+      and ModelId startswith 'dtmi:qcells:contract:leapContract'  // Use startswith for version flexibility
+      and tolower(actionMax) != 'delete'                           // Exclude deleted contracts
+    | join kind=inner (
+        goldAdtAllRelationshipsLatestView
+        | where tolower(Action) != 'delete'
+        | project siteId = Source, Target
+    ) on $left.Id == $right.Target
+    | distinct siteId, meterId = valueMax
+    | extend has_leap_contract = true
+;
+
+// ============================================================================
+// STEP 3: Compare Enrolled Sites vs Asset Registry Sites
+// ============================================================================
+
+// Get count of sites with Leap Contracts
+let ar_leap_count = toscalar(ar_sites_with_leap | summarize count());
+
+// Perform LEFT OUTER JOIN to find enrolled sites missing Leap Contracts
+let validation_results =
+    enrolled_dsgs_sites_table
+    | join kind=leftouter (ar_sites_with_leap) on siteId
+    | extend
+        leap_contract_status = case(
+            isnotnull(has_leap_contract), "✅ Has Leap Contract",
+            "❌ Missing Leap Contract"
+        )
+    | project siteId, meterId, leap_contract_status
+;
+
+// Sites MISSING Leap Contracts (need to be reported to AR team)
+let sites_missing_leap =
+    validation_results
+    | where leap_contract_status == "❌ Missing Leap Contract"
+    | project siteId
+;
+
+// Sites WITH Leap Contracts (validation passed)
+let sites_with_leap =
+    validation_results
+    | where leap_contract_status == "✅ Has Leap Contract"
+    | project siteId, meterId
+;
+
+// ============================================================================
+// STEP 4: Generate Validation Summary Report
+// ============================================================================
+
+print "==================== DSGS LEAP CONTRACT VALIDATION REPORT ====================";
+print "";
+print "📊 SUMMARY STATISTICS:";
+print "";
+
+let enrolled_count = toscalar(enrolled_dsgs_sites_table | count);
+let sites_with_leap_count = toscalar(sites_with_leap | count);
+let sites_missing_leap_count = toscalar(sites_missing_leap | count);
+
+print strcat("Total Enrolled DSGS Sites (from CSV): ", tostring(enrolled_count));
+print strcat("Sites with Leap Contract in AR: ", tostring(sites_with_leap_count), " (", tostring(round(sites_with_leap_count * 100.0 / enrolled_count, 2)), "%)");
+print strcat("Sites MISSING Leap Contract: ", tostring(sites_missing_leap_count), " (", tostring(round(sites_missing_leap_count * 100.0 / enrolled_count, 2)), "%)");
+print "";
+print "==============================================================================";
+print "";
+
+// Output validation results
+validation_results
+| order by leap_contract_status desc, siteId asc;
+
+print "";
+print "==================== SITES MISSING LEAP CONTRACTS ====================";
+print "";
+sites_missing_leap
+| order by siteId asc;
+
+print "";
+print "==================== ACTION ITEMS ====================";
+print "";
+print "✅ NEXT STEPS:";
+print "1. Export 'SITES MISSING LEAP CONTRACTS' table to CSV";
+print "2. Share CSV with Asset Registry team (@Ashok Bhaskar @Chanhyup.Kim)";
+print "3. Request AR team to add Leap Contracts for missing sites";
+print "4. Re-run this validation after AR updates";
+print "5. Proceed with April & May 2026 interval data extraction once all sites validated";
+print "";
+print "==============================================================================";
+
