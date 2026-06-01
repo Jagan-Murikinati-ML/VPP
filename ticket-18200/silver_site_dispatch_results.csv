@@ -1,0 +1,6 @@
+﻿"event_id","site_id","command","power","dispatch_time","dispatch_status_code","response","energy_charged","energy_discharged","energy_exported","energy_imported","battery_power"
+"218c468d-1a64-4aba-b15e-224cf60e7c6c","400021360","CHARGE_FROM_SOLAR","7,600","2025-09-23 16:33:09.000","200","success","700","300","300","400","-97.58064516129032"
+"218c468d-1a64-4aba-b15e-224cf60e7c6c","400005868","CHARGE_FROM_SOLAR","7,600","2025-09-23 16:33:10.000","200","success","1,000","0","300","1,500","-462.7096774193548"
+"218c468d-1a64-4aba-b15e-224cf60e7c6c","400003422","CHARGE_FROM_SOLAR","7,600","2025-09-23 16:33:10.000","200","success","0","8,400","100","5,100","3,214.366666666667"
+"218c468d-1a64-4aba-b15e-224cf60e7c6c","400001251","CHARGE_FROM_SOLAR","7,600","2025-09-23 16:33:11.000","200","success","1,300","900","200","300","-274.83870967741933"
+"06369ddb-7894-4808-aea6-fa4e0781b7e2","400001667","CHARGE_FROM_SOLAR","3,800","2025-09-23 16:33:11.000","200","success","1,200","0","400","700","-576.7"
