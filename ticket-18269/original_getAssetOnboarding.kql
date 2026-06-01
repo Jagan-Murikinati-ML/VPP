@@ -136,7 +136,7 @@
     //Step 12: Fetch Oem data (includes Type 0 and Type 1 OEM)
     let oem_data = goldAdtPropertyMinMaxLatestViewV2
             | where actionMax != 'Delete'
-            and ModelId == "dtmi:qcells:site:site;1"
+            and ModelId startswith "dtmi:qcells:site:site"
             and Key in ('oemInfo.0.oemName', 'oemInfo.0.oemSiteId',
                        'oemInfo.1.oemName', 'oemInfo.1.oemSiteId',
                        'assetRegistrationInfo.accountNumber')
