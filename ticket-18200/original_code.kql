@@ -1,0 +1,81 @@
+.create-or-alter function with (folder = "API Functions", docstring = "Get event level data for each list of events") getVPPEventMetrics_test(input_event_name:string) {
+    // let input_event_name = 'e009374d-a050-43af-bdc9-1ca94d853a4f'; //qa - no dispatch results
+    // let input_event_name = '236a5ec6-a6d9-42c7-b17f-d43a4cdc93af'; //qa - has charge, no discharge
+    // let input_event_name = '881280ab-64e0-4cfa-8e41-400645f600c5'; //qa - single discharge
+    // let input_event_name = 'af17d3fa-82e6-4eb2-8662-d4e86e5138f5'; //dev - no dispatch results
+    // let input_event_name = '248cdb07-df01-4ce1-98e3-6d8f6e8e148d'; //dev - has charge, no discharge
+    // let input_event_name = '054599c5-11ab-4bec-ac48-dca012e83768'; //dev - single command type = discharge type
+    // let input_event_name = '0f5a782b-724c-4c1b-9729-b6ee637cae50'; //dev - discharge and empty command type
+    // let input_event_name = test;
+    // input test variables above this line. function starts below
+    //Parse the siteIds parameter into a dynamic array
+    let inputListParsed = iff(
+        isempty(input_event_name),
+        dynamic([]),
+        split(input_event_name, ",")
+    )
+    ;
+    let history_for_avg_calc = 7d; //how far back in time to go for program average calculations
+    let grab_programs = materialize(
+        silver_stream_dispatch_events
+        | where input_event_name == "" or event_id in (inputListParsed)
+        | distinct program_name
+    );
+    // grab_programs | extend grab_programs='grab_programs';
+    let grab_sites = materialize(
+        silver_stream_dispatch_events
+        | where program_name in (grab_programs | project program_name)
+        | summarize arg_max(created_at_utc,*) by event_id
+        | distinct program_name, event_id, tostring(sites), event_end_time
+        | mv-expand todynamic(sites)
+        | project program_name, event_id, tostring(sites), event_end_time
+    );
+    // grab_sites | extend grab_sites='grab_sites';
+    let asset_availability = materialize(
+        grab_sites
+        | summarize available_sites = count_distinct(sites) by event_id, program_name
+        | where event_id in (inputListParsed) or input_event_name == ""
+    );
+    // asset_availability | extend asset_availability='asset_availability';
+    let listForEventHistory = toscalar(
+        grab_sites
+        | where event_end_time < now()      //
+        | order by event_end_time desc      // look for latest events that have finished
+        | limit 64                          // limit for partition function used in getMultipleEventsSiteDispatchResults helper function (inside getSiteDispatchCommandSummary)
+        | summarize make_list(event_id)
+    )
+    ;
+    // print listForEventHistory;
+    let allEventData = materialize(
+        getSiteDispatchCommandSummary(inputEventIds=listForEventHistory,inputSiteIds=toscalar(grab_sites|summarize make_list(sites)))
+    );
+    // allEventData | extend allEventData = 'allEventData';
+    let program_details = materialize(
+        allEventData
+        | summarize max(overall_command_end_time), command_energy_exported=sum(overall_command_exported) by event_id, site_id, command_type
+        | join kind = inner grab_sites on $left.site_id == $right.sites and $left.event_id == $right.event_id //to add in program_name
+        | union (
+            asset_availability | project program_name, event_id, command_type = 'discharge'                 // create dummy line needed for joining to ensure eventId comes through to end
+            | join kind=leftanti (
+                allEventData | where event_id in (asset_availability|project event_id) | distinct event_id  // if eventid exists in allEventData
+            ) on event_id                                                                                   // remove dummy (with antijoin logic)
+        )                                                                                                   // otherwise, union dummy line to join data to in final cte
+    );
+    // program_details | extend program_details='program_details';
+    program_details
+    | summarize avg_energy_for_program = avgif(command_energy_exported, max_overall_command_end_time >= ago(history_for_avg_calc)) by program_name, command_type
+    | join kind = inner (program_details | summarize dispatch_time = max(max_overall_command_end_time), assets_ran = count_distinctif(site_id, isnotempty( site_id)) by event_id, program_name, command_type) on program_name, command_type
+    | join kind = inner (asset_availability) on program_name, event_id
+    //| join kind = inner (grab_sites | distinct event_id, event_status) on event_id 
+    | extend event_info = bag_pack('program_name',program_name
+        ,'event_id', event_id
+        ,'event_type', command_type
+        ,'dispatch_time', dispatch_time
+        //,'event_status', event_status
+        ,'forecast_dispatch_kWh', round(iff(isnan(avg_energy_for_program),0.0,avg_energy_for_program)*available_sites/1000,2)
+        ,'asset_availability', iff(isempty( dispatch_time),'pending dispatch',strcat( tostring(assets_ran),'/', tostring(available_sites) ))
+    )
+    | where command_type != 'stop'
+    | order by program_name, event_id
+    | summarize data = make_list(event_info);
+}

@@ -1,0 +1,36 @@
+Jagan Murikinati  [7:33 PM]
+Hi @Juan Pablo Culebro I am currently working on enhancing the Asset onboarding report, need to add Utility Company and Utility Service Account Number fields. Could you please confirm where this information is stored and which table we should use?
+Here is the ticket for your reference:- https://dev.azure.com/qcellsces/Helios/_workitems/edit/20086
+Juan Pablo Culebro  [7:43 PM]
+All asset registry related things come from these tables I mentioned before
+But the main things to fallback to are these 3 tables
+silverAdtPropertyEventsV2; -> goldAdtPropertyMinMaxLatestViewV2
+silverAdtRelationshipEventsV2; -> goldAdtAllRelationshipsLatestView
+silverAdtTwinEventsV2; -> goldAdtTwinEventsLatestV2It's more a matter knowing which key/model to look for
+[7:44 PM]goldAdtPropertyMinMaxLatestViewV2
+| where Key contains "utility"
+
+this seems to be right, and it's associated to the site (which is very nice to know to now have to deal with joins and what not)
+Jagan Murikinati  [7:46 PM]
+goldAdtPropertyMinMaxLatestViewV2
+| where Key contains "utility"
+
+I already tried this one Juan, but they is no key containing exact Key called Utility Service Accoutn Number, but we have
+
+commonInfo.lastUpdatedBy.utilityName.lastUpdatedDate
+commonInfo.lastUpdatedBy.utilityName.role
+utilityName
+commonInfo.lastUpdatedBy.utilityName.userName
+commonInfo.lastUpdatedBy.utilityAccountNumber.role
+commonInfo.lastUpdatedBy.utilityAccountNumber.lastUpdatedDate
+commonInfo.lastUpdatedBy.utilityAccountNumber.userName
+utilityAccountNumber
+
+
+
+these are all the distinct keys available related to the "utility", could you please confirm which one I should use for "Utility company" and "utility service account number" (edited) 
+Juan Pablo Culebro  [7:50 PM]
+commonInfo in general is metadata, so you can ignore those
+[7:51 PM]leaving utilityName and accountNumber
+Jagan Murikinati  [7:53 PM]
+Thanks for the clarification Juan, I’ll proceed with using utilityName for the Utility Company and utilityAccountNumber for the Utility Service Account Number.

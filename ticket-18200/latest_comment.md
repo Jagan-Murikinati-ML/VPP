@@ -1,0 +1,1 @@
+Also, I don't know if it helps, but we always show UI with selected date range for events, so we can include date-range as a parameter if it can make it faster

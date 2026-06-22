@@ -1,0 +1,321 @@
+
+.create-or-alter function getAllVppSitesByUserIdV2(
+    inputUserId: string = "",
+    page_index: int = 0,
+    page_size: int = 50,
+    sorting: dynamic = dynamic([]),
+    filters: dynamic = dynamic([]),
+    searchText: string = ""
+){
+    //  let inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c'; //dev
+    // let inputUserId = '13d79b62-cf04-f011-bae2-6045bdf0782b'; //qa
+    // let page = int(0);
+    // let page_size = int(5000);
+    // Step 1: Retrieve site IDs for the given user and expand the dynamic list; cast each to string
+    // Purpose: Optimized VPP sites with server-side filtering, sorting, and search
+    // ============================================================================
+    // PHASE 1: USER MAPPING 
+    // ============================================================================
+    let site_ids_from_user = 
+        goldAdtTwinEventsLatestV2
+        | where TwinId in (
+            goldResourceGroupToSiteMapping 
+            | where resource_group_id in (
+                goldUserGroupToResourceGroupMapping 
+                | where user_group_id in (
+                    goldUserGroupToUserMapping 
+                    | where user_ids == inputUserId and isingroup > 0
+                    | project user_group_id
+                ) and isingroup > 0 
+                | project resource_group_ids
+            ) and isingroup > 0
+            | project site_ids
+        ) and Action != 'Delete'
+        | extend siteId = TwinId
+        | summarize make_set(TwinId)
+        | project list_site_ids = set_TwinId
+    ;
+    // ============================================================================
+    // PHASE 2: VPP SITES FILTER
+    // ============================================================================
+    let vppSites = materialize(
+        goldAdtPropertyMinMaxLatestViewV2 
+        | where Id in (site_ids_from_user)
+        | where Key == 'isVppRegistered' and tolower(valueMax) == 'true'
+        | join kind=inner (goldAdtTwinEventsLatestV2 | where Action != 'Delete') 
+            on $left.Id == $right.TwinId
+    );
+    let allSiteIdsList = toscalar(vppSites | summarize make_list(Id));
+    // ============================================================================
+    // PHASE 3: MINIMAL PROPERTIES FOR FILTER/SORT 
+    // ============================================================================
+    let goldAdtPropertySites_minimal = 
+        materialize(
+            goldAdtPropertyMinMaxLatestViewV2
+            | where Id in (allSiteIdsList)
+                and actionMax != 'Delete'
+                and (Key startswith "oemInfo" and Key endswith "oemName"
+                    or Key in (dynamic([
+                        'address.stateProvince',
+                        'address.zipPostalCode',
+                        'siteName',
+                        'assetRegistrationInfo.accountNumber'
+                    ])))
+            | summarize
+                state = take_anyif(valueMax, Key == 'address.stateProvince'),
+                zipCode = take_anyif(valueMax, Key == 'address.zipPostalCode'),
+                siteName = take_anyif(valueMax, Key == 'siteName'),
+                accountNumber = take_anyif(valueMax, Key == 'assetRegistrationInfo.accountNumber'),
+                (_, oem) = arg_max(
+                    iif(Key == 'oemInfo.oemName', -1,
+                        iif(Key startswith "oemInfo" and Key endswith "oemName", 
+                            toint(extract(@'oemInfo\.(\d+)\.oemName', 1, Key)), 
+                            int(null)))
+                    , valueMax)
+            by siteId = Id
+        )
+    ;
+    // ============================================================================
+    // PHASE 4: PROGRAM DATA FOR FILTER/SORT
+    // ============================================================================
+    let program_data = GetLatestProgramSiteInfo
+        | where site_id in (allSiteIdsList)
+        | join kind=inner (
+            GetLatestProgramInfo 
+            | project program_id, program_name, program_type
+        ) on program_id
+        | summarize program_name = make_set(program_name) by site_id
+    ;
+    // ============================================================================
+    // PHASE 5: BUILD DATASET FOR FILTERING/SORTING/SEARCH
+    // ============================================================================
+    let all_sites_basic = goldAdtPropertySites_minimal
+        | project
+            siteId,
+            siteName,
+            zipPostalCode = zipCode,
+            state,
+            oemname = oem,
+            accountNumber
+        | join kind=leftouter (program_data) on $left.siteId == $right.site_id
+        | project
+            siteId,
+            siteName,
+            zipPostalCode,
+            state,
+            oemname,
+            accountNumber,
+            program_name = coalesce(program_name, dynamic([]))
+    ; 
+    // Total records count (before search/filters)
+    let total_records_count = toscalar(all_sites_basic | count);
+    // ============================================================================
+    // PHASE 6: GLOBAL SEARCH
+    // ============================================================================
+    let searched_data = all_sites_basic
+        | where isempty(searchText) or (
+            siteId contains searchText or
+            tostring(siteName) contains searchText or
+            tostring(state) contains searchText or
+            tostring(zipPostalCode) contains searchText or
+            tostring(accountNumber) contains searchText or
+            tostring(program_name) contains searchText or
+            tostring(oemname) contains searchText
+        )
+    ;
+    // ============================================================================
+    // PHASE 7: DYNAMIC FILTERING 
+    // ============================================================================
+    let has_filters = array_length(filters) > 0;
+    let filtered_data = searched_data
+        | extend has_filters_flag = has_filters
+        | extend filter_count = array_length(filters)
+        | extend siteName_str = tostring(siteName)
+        | extend program_name_str = tostring(program_name)
+        | mv-expand bagexpansion=array filter_index = iff(has_filters, range(0, array_length(filters) - 1, 1), dynamic([0])) to typeof(int)
+        | extend filter_field = iff(has_filters, tostring(filters[filter_index].field), "")
+        | extend filter_op = iff(has_filters, tolower(tostring(filters[filter_index].op)), "")
+        | extend filter_value = iff(has_filters, tostring(filters[filter_index].value), "")
+        | extend filter_matches = iff(has_filters, case(
+            filter_field == "site_number" and filter_op == "==", tolower(siteId) == tolower(filter_value),
+            filter_field == "site_number" and filter_op == "contains", siteId contains tolower(filter_value),
+            filter_field == "site_name" and filter_op == "==", tolower(siteName_str) == tolower(filter_value),
+            filter_field == "site_name" and filter_op == "contains", siteName_str contains tolower(filter_value),
+            filter_field == "state" and filter_op == "==", tolower(state) == tolower(filter_value),
+            filter_field == "state" and filter_op == "contains", state contains tolower(filter_value),
+            filter_field == "zipPostalCode" and filter_op == "==", tolower(zipPostalCode) == tolower(filter_value),
+            filter_field == "zipPostalCode" and filter_op == "contains", zipPostalCode contains tolower(filter_value),
+            filter_field == "external_reference_id" and filter_op == "==", tolower(accountNumber) == tolower(filter_value),
+            filter_field == "external_reference_id" and filter_op == "contains", accountNumber contains tolower(filter_value),
+            filter_field == "program_name" and filter_op == "==", array_index_of(program_name, filter_value) != -1,
+            filter_field == "program_name" and filter_op == "contains", program_name_str contains tolower(filter_value),
+            filter_field == "oem_name" and filter_op == "==", tolower(oemname) == tolower(filter_value),
+            filter_field == "oem_name" and filter_op == "contains", oemname contains tolower(filter_value),
+            false
+        ), true)
+        | summarize matched_filters = countif(filter_matches), total_filters = max(filter_count)
+            by siteId, siteName_str, zipPostalCode, state, oemname, accountNumber, program_name_str, has_filters_flag
+        | where has_filters_flag == false or matched_filters == total_filters
+        | extend siteName = siteName_str, program_name = todynamic(program_name_str)
+        | project siteId, siteName, zipPostalCode, state, oemname, accountNumber, program_name
+    ;
+    // ============================================================================
+    // PHASE 8: DYNAMIC SORTING 
+    // ============================================================================
+    let sort_field = iff(array_length(sorting) > 0, tostring(sorting[0].field), "site_number");
+    let sort_direction = iff(array_length(sorting) > 0, tolower(tostring(sorting[0].direction)), "asc");
+    let sorted_data = filtered_data
+        | extend sort_key_padded = strcat(repeat("0", 20 - strlen(siteId)), siteId)
+        | extend sort_key_asc = case(
+            sort_field == "site_number", sort_key_padded,
+            sort_field == "site_name", tolower(tostring(siteName)),
+            sort_field == "state", tolower(state),
+            sort_field == "zipPostalCode", zipPostalCode,
+            sort_field == "external_reference_id", tolower(accountNumber),
+            sort_field == "program_name", tolower(strcat_array(program_name, ", ")),
+            sort_field == "oem_name", tolower(oemname),
+            sort_key_padded
+        )
+        | extend sort_key_desc = sort_key_asc
+        | order by sort_key_asc asc, siteId asc
+        | extend rank_asc = row_number()
+        | order by sort_key_desc desc, siteId desc
+        | extend rank_desc = row_number()
+        | extend final_rank = case(sort_direction == "desc", rank_desc, rank_asc)
+        | order by final_rank asc
+        | serialize sort_rank = row_number()
+        | project-away sort_key_padded, sort_key_asc, sort_key_desc, rank_asc, rank_desc, final_rank
+    ;
+    // Total count after filters/search
+    let total_count = toscalar(sorted_data | count);
+    // ============================================================================
+    // PHASE 9: PAGINATION - Get only the page we need
+    // ============================================================================
+    let paginated_site_data = sorted_data
+        | where sort_rank > page_index * page_size and sort_rank <= (page_index + 1) * page_size
+    ;
+    let paginatedSiteIdsList = toscalar(paginated_site_data | summarize make_list(siteId));
+    // ============================================================================
+    // PHASE 10: FULL DATA FETCH - ONLY FOR PAGINATED SITES
+    // ============================================================================
+    // 10a: Site properties with timezone (needed for telemetry)
+    let goldAdtPropertySites_full =
+        materialize(
+            goldAdtPropertyMinMaxLatestViewV2
+            | where Id in (paginatedSiteIdsList)
+                and actionMax != 'Delete'
+                and (Key in (dynamic(['address.location.timeZone'])))
+            | summarize
+                timezone = take_anyif(valueMax, Key == 'address.location.timeZone')
+            by siteId = Id
+        )
+    ;
+    // 10b: Telemetry data (optimized)
+    let commData = silverCommDataSite
+        | where siteId in (paginatedSiteIdsList)
+        | summarize arg_max(sourceTimestamp, *) by siteId
+        | join kind=leftouter (goldAdtPropertySites_full | project siteId, timezone) on siteId
+        | extend timezone = coalesce(timezone, "UTC")
+        | extend localTimestamp = case(timezone == "UTC", now(),
+                                       datetime_utc_to_local(sourceTimestamp, timezone))
+        | project siteId,
+                  SOC = battery_713_SoC,
+                  grid_energy_imported = grid_200_IncWhImp,
+                  grid_energy_exported = grid_200_IncWhExp,
+                  last_update_in_local_time = localTimestamp,
+                  inverter_status = sourceTimestamp > now() - 1h,
+                  last_updated_timestamp_utc = sourceTimestamp,
+                  timezone
+    ;
+    // 10c: Device relationships
+    let relatedDevices =
+        materialize(
+            goldAdtAllRelationshipsLatestView
+            | where Action != 'Delete'
+                and Source in (paginatedSiteIdsList)
+                and Name in ("hasDevice","hasSystemInfo")
+            | project siteId = Source, deviceId = Target, Name
+        )
+    ;
+    // 10d: Rated capacity 
+    let rated_capacity =
+        goldAdtPropertyMinMaxLatestViewV2
+        | where Key in ('nameplateInfo.wMaxRtg','productInfo.prodSubType')
+        | join kind = inner (
+            goldAdtTwinEventsLatestV2
+            | where Action != 'Delete' and ModelId startswith "dtmi:qcells:device:"
+            | project TwinId, ModelId
+        ) on $left.Id == $right.TwinId and $left.ModelId == $right.ModelId
+        | project-away TwinId, ModelId1
+        | lookup kind = inner (relatedDevices | where Name == 'hasDevice')
+            on $left.Id == $right.deviceId
+        | summarize
+            rated_capacity = anyif(valueMax, Key == 'nameplateInfo.wMaxRtg'),
+            prodSubType = anyif(valueMax, Key == 'productInfo.prodSubType'),
+            max_timeMax = max(timeMax)
+        by siteId, deviceId = Id
+        | where prodSubType in ("HybridInverter","BatteryInverter")
+        | summarize arg_max(max_timeMax,*) by siteId
+        | project SiteId = siteId, rated_capacity, timeMax = max_timeMax
+    ;
+    // 10e: System size 
+    let system_size =
+        goldAdtPropertyMinMaxLatestViewV2
+        | where Key in ('systemSizeKw')
+        | lookup kind = inner (relatedDevices | where Name == 'hasSystemInfo')
+            on $left.Id == $right.deviceId
+        | summarize
+            (priorityModel, system_size_kw) = arg_min(
+                case(
+                    ModelId startswith "dtmi:qcells:systemInfo:defaultSystemInfo", 1,
+                    ModelId startswith "dtmi:qcells:systemInfo:pvSystemInfo", 2,
+                    999
+                ), valueMax)
+        by siteId
+    ;
+    // ============================================================================
+    // PHASE 11: COMBINE ALL DATA - PRESERVE SORT ORDER
+    // ============================================================================
+    let result_data = paginated_site_data
+        | project siteId, siteName, zipPostalCode, state, oemname, accountNumber, program_name, sort_rank
+        | join kind=leftouter (commData) on siteId
+        | join kind=leftouter (rated_capacity) on $left.siteId == $right.SiteId
+        | join kind=leftouter (system_size) on siteId
+        | extend data = pack(
+            'site_number', siteId,
+            'site_name', siteName,
+            'state', state,
+            'zipPostalCode', zipPostalCode,
+            'external_reference_id', accountNumber,
+            'program_name', program_name,
+            'SOC', SOC,
+            'rated_capacity', rated_capacity,
+            'system_size_kw', system_size_kw,
+            'inverter_status', inverter_status,
+            'grid_energy_imported', grid_energy_imported,
+            'grid_energy_exported', grid_energy_exported,
+            'lifetime_production', '-',
+            'oem_name', oemname,
+            'last_update_in_local_time', last_update_in_local_time,
+            'last_updated_timestamp_utc', last_updated_timestamp_utc,
+            'timezone', timezone
+        )
+        | order by sort_rank asc  // CRITICAL: Preserve sort order
+    ;
+    // ============================================================================
+    // PHASE 12: FINAL RESPONSE WITH METADATA
+    // ============================================================================
+    let data_value = result_data | summarize data = make_list(data);
+    let page_count = toscalar(result_data | summarize count_distinct(siteId));
+    let pagination_metadata = pack('pagination', pack(
+        'page', page_index,
+        'page_size', page_count,
+        'total_count', total_count,
+        'total_records_count', total_records_count
+    ));
+    let status = iff(total_count == 0, 404, 200);
+    // Return final result
+    data_value
+    | extend metadata = pagination_metadata, status = status
+    | project metadata, data, status
+}

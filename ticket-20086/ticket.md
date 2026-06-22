@@ -1,0 +1,3 @@
+@Jagan.Murikinati Could you please add the "Utility Compay" and "Utility Service Account Number" to our Fabric Asset Onboarding Dashboard ((https://app.fabric.microsoft.com/groups/09c5e73c-a820-4100-aef5-d774ac0395f6/reports/b140bc27-f819-4b74-8ce6-d60b49cc583b/7c30b3e609720e59d7be?experience=fabric-developer)? This will help us validate the utility info in AR. Thank you.
+
+cc @Sanjeev Lakkaraju @Naveen Siddalingaswamy @gerrit woerner @Kai Xu @Jasper Liu
