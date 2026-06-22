@@ -133,25 +133,31 @@
         ) on $left.siteId == $right.siteTwinId
         | distinct siteId
         | extend has_battery = 'Yes';
-    //Step 12: Fetch Oem data (includes Type 0 and Type 1 OEM)
-    let oem_data = goldAdtPropertyMinMaxLatestViewV2
+    //Step 12: Fetch Oem data and Utility Information (Combined for performance)
+    let oem_and_utility_data = goldAdtPropertyMinMaxLatestViewV2
             | where actionMax != 'Delete'
             and ModelId startswith "dtmi:qcells:site:site"
             and Key in ('oemInfo.0.oemName', 'oemInfo.0.oemSiteId',
                        'oemInfo.1.oemName', 'oemInfo.1.oemSiteId',
-                       'assetRegistrationInfo.accountNumber')
+                       'assetRegistrationInfo.accountNumber',
+                       'utilityName', 'utilityAccountNumber')
             | extend type0_oem_name = case(Key == 'oemInfo.0.oemName', valueMax, ""),
                      type0_oem_siteId = case(Key == 'oemInfo.0.oemSiteId', valueMax, ""),
                      type1_oem_name = case(Key == 'oemInfo.1.oemName', valueMax, ""),
                      type1_oem_siteId = case(Key == 'oemInfo.1.oemSiteId', valueMax, ""),
-                     account_number = case(Key == 'assetRegistrationInfo.accountNumber', valueMax, "")
+                     account_number = case(Key == 'assetRegistrationInfo.accountNumber', valueMax, ""),
+                     utility_company = case(Key == 'utilityName', valueMax, ""),
+                     utility_service_account_number = case(Key == 'utilityAccountNumber', valueMax, "")
             | summarize type0_oem_name = any(type0_oem_name),
                        type0_oem_siteId = any(type0_oem_siteId),
                        type1_oem_name = any(type1_oem_name),
                        type1_oem_siteId = any(type1_oem_siteId),
-                       account_number = any(account_number) by Id
-            | project siteId = Id, type0_oem_name, type0_oem_siteId, type1_oem_name, type1_oem_siteId, account_number
-        ; //oem_data
+                       account_number = any(account_number),
+                       utility_company = any(utility_company),
+                       utility_service_account_number = any(utility_service_account_number) by Id
+            | project siteId = Id, type0_oem_name, type0_oem_siteId, type1_oem_name, type1_oem_siteId,
+                     account_number, utility_company, utility_service_account_number
+        ; //oem_and_utility_data
     // Step 13: Combine all data from the different sources
     let result_data = site_ids_from_user
          | join kind = leftouter siteProperties on $left.site_ids == $right.siteId
@@ -161,7 +167,7 @@
          | join kind = leftouter homeowner on $left.site_ids == $right.siteId
          | join kind = leftouter tpo_registered on $left.site_ids == $right.siteId
          | join kind = leftouter installer on $left.site_ids == $right.siteId
-         | join kind = leftouter oem_data on $left.site_ids == $right.siteId
+         | join kind = leftouter oem_and_utility_data on $left.site_ids == $right.siteId
          | join kind = leftouter sitesWithBattery on $left.site_ids == $right.siteId
          //| join kind=leftouter rated_capacity on $left.site_ids == $right.SiteId
          | distinct site_ids,
@@ -186,6 +192,8 @@
                    has_battery = coalesce(has_battery, 'No'),
                    account_number,
                    APP_TPO_AccountId = case(account_number like 'APPTPO', replace(@"[^\d]", "", account_number), ""),
+                   utility_company,
+                   utility_service_account_number,
                    last_data_timestamp,
                    system_status_1h_online = iif(last_data_timestamp >= ago(1h), "online", "offline")
      ; result_data

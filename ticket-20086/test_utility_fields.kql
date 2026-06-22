@@ -1,0 +1,115 @@
+// ============================================================================
+// Ticket 20086: Test Utility Fields
+// Purpose: Verify utility data is available and validate the implementation
+// ============================================================================
+
+// ============================================================================
+// TEST 1: Check if utility keys exist in goldAdtPropertyMinMaxLatestViewV2
+// ============================================================================
+print "TEST 1: Verify utility keys exist"
+;
+goldAdtPropertyMinMaxLatestViewV2
+| where Key in ('utilityName', 'utilityAccountNumber')
+| where actionMax != 'Delete'
+| summarize 
+    total_sites_with_utility_name = countif(Key == 'utilityName'),
+    total_sites_with_utility_account = countif(Key == 'utilityAccountNumber'),
+    sample_utility_names = make_set_if(valueMax, Key == 'utilityName', 10),
+    sample_utility_accounts = make_set_if(valueMax, Key == 'utilityAccountNumber', 10)
+
+// ============================================================================
+// TEST 2: Combined OEM + Utility data extraction (optimized approach)
+// ============================================================================
+;
+print "TEST 2: Combined OEM and Utility data extraction"
+;
+goldAdtPropertyMinMaxLatestViewV2
+| where actionMax != 'Delete'
+    and ModelId startswith "dtmi:qcells:site:site"
+    and Key in ('oemInfo.0.oemName', 'oemInfo.0.oemSiteId',
+               'oemInfo.1.oemName', 'oemInfo.1.oemSiteId',
+               'assetRegistrationInfo.accountNumber',
+               'utilityName', 'utilityAccountNumber')
+| extend type0_oem_name = case(Key == 'oemInfo.0.oemName', valueMax, ""),
+         type0_oem_siteId = case(Key == 'oemInfo.0.oemSiteId', valueMax, ""),
+         account_number = case(Key == 'assetRegistrationInfo.accountNumber', valueMax, ""),
+         utility_company = case(Key == 'utilityName', valueMax, ""),
+         utility_service_account_number = case(Key == 'utilityAccountNumber', valueMax, "")
+| summarize type0_oem_name = any(type0_oem_name),
+           type0_oem_siteId = any(type0_oem_siteId),
+           account_number = any(account_number),
+           utility_company = any(utility_company),
+           utility_service_account_number = any(utility_service_account_number) by Id
+| project siteId = Id, type0_oem_name, type0_oem_siteId, account_number,
+         utility_company, utility_service_account_number
+| where isnotempty(utility_company) or isnotempty(utility_service_account_number)
+| take 20
+
+// ============================================================================
+// TEST 3: Test the modified getAssetOnboarding() function
+// ============================================================================
+;
+print "TEST 3: Test modified getAssetOnboarding() function"
+;
+getAssetOnboarding()
+| where isnotempty(utility_company) or isnotempty(utility_service_account_number)
+| project site_ids, 
+          customer_name,
+          site_address,
+          state,
+          utility_company,
+          utility_service_account_number,
+          type0_oem_name,
+          isVppRegistered,
+          isLeapRegistered
+| take 50
+
+// ============================================================================
+// TEST 4: Statistics on utility data coverage
+// ============================================================================
+;
+print "TEST 4: Utility data coverage statistics"
+;
+getAssetOnboarding()
+| summarize 
+    total_sites = count(),
+    sites_with_utility_company = countif(isnotempty(utility_company)),
+    sites_with_utility_account = countif(isnotempty(utility_service_account_number)),
+    sites_with_both = countif(isnotempty(utility_company) and isnotempty(utility_service_account_number)),
+    sites_with_neither = countif(isempty(utility_company) and isempty(utility_service_account_number))
+| extend 
+    pct_with_utility_company = round(100.0 * sites_with_utility_company / total_sites, 2),
+    pct_with_utility_account = round(100.0 * sites_with_utility_account / total_sites, 2),
+    pct_with_both = round(100.0 * sites_with_both / total_sites, 2),
+    pct_with_neither = round(100.0 * sites_with_neither / total_sites, 2)
+
+// ============================================================================
+// TEST 5: Compare OEM data with utility data (sanity check)
+// ============================================================================
+;
+print "TEST 5: Sites with OEM but missing utility info"
+;
+getAssetOnboarding()
+| where isnotempty(type0_oem_name)
+| where isempty(utility_company) and isempty(utility_service_account_number)
+| project site_ids, 
+          customer_name,
+          state,
+          type0_oem_name,
+          type1_oem_name,
+          utility_company,
+          utility_service_account_number
+| take 20
+
+// ============================================================================
+// TEST 6: Verify no duplicate columns or data issues
+// ============================================================================
+;
+print "TEST 6: Schema validation"
+;
+getAssetOnboarding()
+| take 1
+| getschema
+| where ColumnName in ('utility_company', 'utility_service_account_number', 
+                       'site_ids', 'customer_name', 'type0_oem_name')
+| project ColumnName, ColumnType
