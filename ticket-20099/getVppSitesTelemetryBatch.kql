@@ -43,22 +43,42 @@
     // ============================================================================
     // PHASE 3: GET TELEMETRY DATA - Latest telemetry for specified sites
     // ============================================================================
-    let commData = silverCommDataSite
+    // CRITICAL: Start with site_list to ensure ALL input sites are returned
+    // even if they have no telemetry data (maintains consistency with original)
+    let site_list_table =
+        print siteIds
+        | mv-expand siteId = siteIds to typeof(string)
+        | project siteId
+    ;
+
+    let telemetry_data = silverCommDataSite
         | where siteId in (site_list)
         | summarize arg_max(sourceTimestamp, *) by siteId
-        | join kind=leftouter (goldAdtPropertySites_timezone | project siteId, timezone) on siteId
-        | extend timezone = coalesce(timezone, "UTC")
-        | extend localTimestamp = case(
-            timezone == "UTC", sourceTimestamp,
-            datetime_utc_to_local(sourceTimestamp, timezone)
-        )
         | project siteId,
                   SOC = battery_713_SoC,
                   battery_power_w = battery_200_W,
                   grid_energy_imported = grid_200_IncWhImp,
                   grid_energy_exported = grid_200_IncWhExp,
+                  sourceTimestamp,
+                  inverter_status = sourceTimestamp > now() - 1h
+    ;
+
+    let commData = site_list_table
+        | join kind=leftouter (telemetry_data) on siteId
+        | join kind=leftouter (goldAdtPropertySites_timezone | project siteId, timezone) on siteId
+        | extend timezone = coalesce(timezone, "UTC", "")
+        | extend localTimestamp = case(
+            isnotnull(sourceTimestamp) and timezone != "UTC" and timezone != "",
+                datetime_utc_to_local(sourceTimestamp, timezone),
+            sourceTimestamp
+        )
+        | project siteId,
+                  SOC,
+                  battery_power_w,
+                  grid_energy_imported,
+                  grid_energy_exported,
                   last_update_in_local_time = localTimestamp,
-                  inverter_status = sourceTimestamp > now() - 1h,
+                  inverter_status,
                   last_updated_timestamp_utc = sourceTimestamp,
                   timezone
     ;
