@@ -1,0 +1,154 @@
+// ============================================================================
+// TEST: Verify NULL Telemetry Handling
+// Bug Fix: Sites without telemetry should still be returned
+// ============================================================================
+
+print "=== TEST: Sites with and without telemetry ===";
+
+// Test with the exact site IDs from the issue
+let result = getVppSitesTelemetryBatch(
+    siteIds = dynamic([
+        "100000030",  // No telemetry
+        "100000471",  // No telemetry
+        "100000477",  // Has telemetry
+        "100000484",  // No telemetry
+        "100000538"   // Has telemetry
+    ])
+);
+
+result
+| mv-expand data
+| extend 
+    site_number = tostring(data.site_number),
+    has_telemetry = isnotnull(data.SOC) or isnotnull(data.last_updated_timestamp_utc)
+| project 
+    site_number,
+    has_telemetry,
+    SOC = data.SOC,
+    battery_power_w = data.battery_power_w,
+    grid_energy_imported = data.grid_energy_imported,
+    grid_energy_exported = data.grid_energy_exported,
+    last_updated_timestamp_utc = data.last_updated_timestamp_utc,
+    timezone = data.timezone
+| order by site_number asc;
+
+// Expected Result:
+// 5 rows returned (ALL input sites)
+// Sites with telemetry: 100000477, 100000538 (has values)
+// Sites without telemetry: 100000030, 100000471, 100000484 (all NULLs)
+
+print "=== VALIDATION: Count should be 5 ===";
+result
+| mv-expand data
+| summarize 
+    total_sites = count(),
+    sites_with_telemetry = countif(isnotnull(data.SOC) or isnotnull(data.last_updated_timestamp_utc)),
+    sites_without_telemetry = countif(isnull(data.SOC) and isnull(data.last_updated_timestamp_utc))
+| extend 
+    test_passed = total_sites == 5,
+    expected_with_telemetry = 2,
+    expected_without_telemetry = 3;
+
+// Expected:
+// total_sites = 5 ✅
+// sites_with_telemetry = 2 ✅
+// sites_without_telemetry = 3 ✅
+// test_passed = true ✅
+
+print "=== COMPARISON: Original vs New Function ===";
+
+// Original function (getAllVppSitesByUserIdV2)
+let original = getAllVppSitesByUserIdV2(
+    inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c',
+    page_index = 0,
+    page_size = 50
+)
+| mv-expand data
+| where data.site_number in ("100000030", "100000471", "100000477", "100000484", "100000538")
+| extend 
+    site_number = tostring(data.site_number),
+    source = "ORIGINAL"
+| project 
+    source,
+    site_number,
+    SOC = data.SOC,
+    battery_power_w = data.battery_power_w,
+    rated_capacity = tostring(data.rated_capacity),
+    inverter_status = data.inverter_status,
+    timezone = tostring(data.timezone);
+
+// New function (getVppSitesTelemetryBatch)
+let new_func = getVppSitesTelemetryBatch(
+    siteIds = dynamic(["100000030", "100000471", "100000477", "100000484", "100000538"])
+)
+| mv-expand data
+| extend 
+    site_number = tostring(data.site_number),
+    source = "NEW"
+| project 
+    source,
+    site_number,
+    SOC = data.SOC,
+    battery_power_w = data.battery_power_w,
+    rated_capacity = tostring(data.rated_capacity),
+    inverter_status = data.inverter_status,
+    timezone = tostring(data.timezone);
+
+// Side-by-side comparison
+original
+| union new_func
+| order by site_number asc, source asc;
+
+// Expected:
+// For each site_number, should see 2 rows (ORIGINAL and NEW)
+// Values should match for sites with telemetry
+// Both should return NULL for sites without telemetry
+
+print "=== FIELD-BY-FIELD MATCH CHECK ===";
+
+let original_data = getAllVppSitesByUserIdV2(
+    inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c',
+    page_index = 0,
+    page_size = 50
+)
+| mv-expand data
+| where data.site_number in ("100000030", "100000471", "100000477", "100000484", "100000538")
+| extend site_number = tostring(data.site_number)
+| project 
+    site_number,
+    SOC_orig = data.SOC,
+    battery_power_w_orig = data.battery_power_w,
+    inverter_status_orig = data.inverter_status,
+    timezone_orig = tostring(data.timezone);
+
+let new_data = getVppSitesTelemetryBatch(
+    siteIds = dynamic(["100000030", "100000471", "100000477", "100000484", "100000538"])
+)
+| mv-expand data
+| extend site_number = tostring(data.site_number)
+| project 
+    site_number,
+    SOC_new = data.SOC,
+    battery_power_w_new = data.battery_power_w,
+    inverter_status_new = data.inverter_status,
+    timezone_new = tostring(data.timezone);
+
+original_data
+| join kind=fullouter (new_data) on site_number
+| extend 
+    site_number = coalesce(site_number, site_number1),
+    SOC_match = (isnull(SOC_orig) and isnull(SOC_new)) or (SOC_orig == SOC_new),
+    battery_power_match = (isnull(battery_power_w_orig) and isnull(battery_power_w_new)) or (battery_power_w_orig == battery_power_w_new),
+    inverter_status_match = (isnull(inverter_status_orig) and isnull(inverter_status_new)) or (inverter_status_orig == inverter_status_new),
+    timezone_match = timezone_orig == timezone_new or (timezone_orig == "" and timezone_new == "") or (isnull(timezone_orig) and timezone_new == ""),
+    all_fields_match = SOC_match and battery_power_match and inverter_status_match and timezone_match
+| project 
+    site_number,
+    all_fields_match,
+    SOC_orig, SOC_new, SOC_match,
+    battery_power_w_orig, battery_power_w_new, battery_power_match,
+    inverter_status_orig, inverter_status_new, inverter_status_match,
+    timezone_orig, timezone_new, timezone_match
+| order by site_number asc;
+
+// Expected: all_fields_match = true for ALL sites ✅
