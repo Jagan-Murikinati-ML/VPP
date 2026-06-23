@@ -1,0 +1,188 @@
+// ============================================================================
+// Test Queries for Ticket 20099 - Two Function Architecture
+// ============================================================================
+// Test both functions independently and together
+// ============================================================================
+
+// ============================================================================
+// TEST 1: Function 1 - Basic List (No filters, no sorting)
+// ============================================================================
+print "TEST 1: Basic site list - First page"
+;
+let start = now();
+let result = getAllVppSitesList(
+    inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c',  // DEV user
+    page_index = 0,
+    page_size = 50
+);
+let end = now();
+result;
+print test = "Function 1 - Basic", duration_ms = datetime_diff('millisecond', end, start)
+
+// ============================================================================
+// TEST 2: Function 1 - With State Filter
+// ============================================================================
+;
+print "TEST 2: Site list filtered by state = CA"
+;
+let start = now();
+let result = getAllVppSitesList(
+    inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c',
+    page_index = 0,
+    page_size = 50,
+    filters = dynamic([{"field": "state", "op": "==", "value": "CA"}])
+);
+let end = now();
+result;
+print test = "Function 1 - With Filter", duration_ms = datetime_diff('millisecond', end, start)
+
+// ============================================================================
+// TEST 3: Function 1 - With Sorting
+// ============================================================================
+;
+print "TEST 3: Site list sorted by site name descending"
+;
+let start = now();
+let result = getAllVppSitesList(
+    inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c',
+    page_index = 0,
+    page_size = 50,
+    sorting = dynamic([{"field": "site_name", "direction": "desc"}])
+);
+let end = now();
+result;
+print test = "Function 1 - With Sorting", duration_ms = datetime_diff('millisecond', end, start)
+
+// ============================================================================
+// TEST 4: Function 1 - With Global Search
+// ============================================================================
+;
+print "TEST 4: Site list with search term 'Solar'"
+;
+let start = now();
+let result = getAllVppSitesList(
+    inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c',
+    page_index = 0,
+    page_size = 50,
+    searchText = "Solar"
+);
+let end = now();
+result;
+print test = "Function 1 - With Search", duration_ms = datetime_diff('millisecond', end, start)
+
+// ============================================================================
+// TEST 5: Function 1 - Multiple Filters + Sorting
+// ============================================================================
+;
+print "TEST 5: Complex query - State=CA, sorted by site name"
+;
+let start = now();
+let result = getAllVppSitesList(
+    inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c',
+    page_index = 0,
+    page_size = 50,
+    filters = dynamic([
+        {"field": "state", "op": "==", "value": "CA"},
+        {"field": "program_name", "op": "contains", "value": "DSGS"}
+    ]),
+    sorting = dynamic([{"field": "site_name", "direction": "asc"}])
+);
+let end = now();
+result;
+print test = "Function 1 - Complex", duration_ms = datetime_diff('millisecond', end, start)
+
+// ============================================================================
+// TEST 6: Extract Site IDs from Function 1 Response
+// ============================================================================
+;
+print "TEST 6: Extract site IDs for Function 2"
+;
+let list_response = getAllVppSitesList(
+    inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c',
+    page_index = 0,
+    page_size = 10  // Small batch for testing
+);
+// Extract site IDs from response
+list_response
+| mv-expand data
+| extend site_number = tostring(data.site_number)
+| summarize siteIds = make_list(site_number)
+| project siteIds
+
+// ============================================================================
+// TEST 7: Function 2 - Telemetry for Specific Sites
+// ============================================================================
+;
+print "TEST 7: Get telemetry for specific site IDs"
+;
+let start = now();
+let result = getVppSitesTelemetryBatch(
+    siteIds = dynamic([
+        "400012345",
+        "400012346",
+        "400012347",
+        "400012348",
+        "400012349"
+    ])
+);
+let end = now();
+result;
+print test = "Function 2 - Telemetry", duration_ms = datetime_diff('millisecond', end, start)
+
+// ============================================================================
+// TEST 8: Complete Two-Function Flow (Simulating Frontend)
+// ============================================================================
+;
+print "TEST 8: Complete flow - List then Telemetry"
+;
+// Step 1: Get site list
+let start_total = now();
+let start_list = now();
+let list_data = getAllVppSitesList(
+    inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c',
+    page_index = 0,
+    page_size = 10
+);
+let end_list = now();
+// Step 2: Extract site IDs
+let site_ids = toscalar(
+    list_data
+    | mv-expand data
+    | extend site_number = tostring(data.site_number)
+    | summarize make_list(site_number)
+);
+// Step 3: Get telemetry
+let start_telemetry = now();
+let telemetry_data = getVppSitesTelemetryBatch(siteIds = site_ids);
+let end_telemetry = now();
+let end_total = now();
+// Return both results with timing
+print summary = pack(
+    'step1_list_ms', datetime_diff('millisecond', end_list, start_list),
+    'step2_telemetry_ms', datetime_diff('millisecond', end_telemetry, start_telemetry),
+    'total_ms', datetime_diff('millisecond', end_total, start_total),
+    'site_count', array_length(site_ids)
+);
+list_data;
+telemetry_data
+
+// ============================================================================
+// TEST 9: Performance with Different Page Sizes
+// ============================================================================
+;
+print "TEST 9: Performance test - Different page sizes"
+;
+let test_page_size = (size: int) {
+    let start = now();
+    let result = getAllVppSitesList(
+        inputUserId = '81ab4c51-a8d9-ef11-8eea-00224809f11c',
+        page_index = 0,
+        page_size = size
+    );
+    let end = now();
+    print page_size = size, duration_ms = datetime_diff('millisecond', end, start)
+};
+test_page_size(10);
+test_page_size(25);
+test_page_size(50);
+test_page_size(100)

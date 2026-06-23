@@ -1,0 +1,178 @@
+// ============================================================================
+// TEST QUERIES - Ticket 18200 Optimized Function
+// ============================================================================
+
+// ============================================================================
+// TEST 1: Performance Test - Last 30 Days
+// ============================================================================
+print "=== TEST 1: Last 30 Days Performance ===";
+let start_time = now();
+let result = getVPPEventMetrics_test(
+    '',              // Empty = all events in range
+    ago(30d),        // Start date
+    now()            // End date
+);
+let end_time = now();
+print duration_ms = datetime_diff('millisecond', end_time, start_time);
+result;
+
+// Expected: 1-2 seconds ✅
+
+// ============================================================================
+// TEST 2: Performance Test - Last 7 Days (very fast)
+// ============================================================================
+print "=== TEST 2: Last 7 Days Performance ===";
+let start_time = now();
+let result = getVPPEventMetrics_test(
+    '',              // Empty = all events in range
+    ago(7d),         // Start date
+    now()            // End date
+);
+let end_time = now();
+print duration_ms = datetime_diff('millisecond', end_time, start_time);
+result;
+
+// Expected: 600ms - 1 second ✅
+
+// ============================================================================
+// TEST 3: Performance Test - Last 90 Days
+// ============================================================================
+print "=== TEST 3: Last 90 Days Performance ===";
+let start_time = now();
+let result = getVPPEventMetrics_test(
+    '',              // Empty = all events in range
+    ago(90d),        // Start date
+    now()            // End date
+);
+let end_time = now();
+print duration_ms = datetime_diff('millisecond', end_time, start_time);
+result;
+
+// Expected: 2-4 seconds ✅
+
+// ============================================================================
+// TEST 4: Specific Event (with event ID)
+// ============================================================================
+print "=== TEST 4: Specific Event ===";
+let test_event_id = 'e009374d-a050-43af-bdc9-1ca94d853a4f'; // Replace with real event ID
+let start_time = now();
+let result = getVPPEventMetrics_test(
+    test_event_id,   // Specific event
+    ago(90d),        // Start date (wide enough to include the event)
+    now()            // End date
+);
+let end_time = now();
+print duration_ms = datetime_diff('millisecond', end_time, start_time);
+result;
+
+// Expected: 1-2 seconds ✅
+
+// ============================================================================
+// TEST 5: Multiple Events (comma-separated)
+// ============================================================================
+print "=== TEST 5: Multiple Events ===";
+let event_ids = 'event-id-1,event-id-2,event-id-3'; // Replace with real IDs
+let start_time = now();
+let result = getVPPEventMetrics_test(
+    event_ids,       // Multiple events
+    ago(90d),        // Start date
+    now()            // End date
+);
+let end_time = now();
+print duration_ms = datetime_diff('millisecond', end_time, start_time);
+result;
+
+// Expected: 1-3 seconds ✅
+
+// ============================================================================
+// TEST 6: Data Accuracy - Verify Output Structure
+// ============================================================================
+print "=== TEST 6: Verify Output Structure ===";
+getVPPEventMetrics_test('', ago(30d), now())
+| mv-expand data
+| project 
+    program_name = data.program_name,
+    event_id = data.event_id,
+    event_type = data.event_type,
+    dispatch_time = data.dispatch_time,
+    forecast_dispatch_kWh = data.forecast_dispatch_kWh,
+    asset_availability = data.asset_availability
+| take 10;
+
+// Expected: All fields present, no nulls in required fields ✅
+
+// ============================================================================
+// TEST 7: Edge Case - No Events in Range
+// ============================================================================
+print "=== TEST 7: No Events in Range ===";
+getVPPEventMetrics_test(
+    '',
+    datetime(2020-01-01),    // Old date range
+    datetime(2020-01-31)     // No events expected
+);
+
+// Expected: Empty result or minimal data ✅
+
+// ============================================================================
+// TEST 8: Edge Case - Future Date Range
+// ============================================================================
+print "=== TEST 8: Future Date Range ===";
+getVPPEventMetrics_test(
+    '',
+    now() + 1d,      // Future start
+    now() + 30d      // Future end
+);
+
+// Expected: Only scheduled/future events ✅
+
+// ============================================================================
+// TEST 9: Date Range Matching UI Selection
+// ============================================================================
+// Simulate what frontend would send based on UI date picker
+
+print "=== TEST 9: UI Date Range Simulation ===";
+
+// User selects: Jan 1, 2026 - Jun 22, 2026
+let ui_start_date = datetime(2026-01-01);
+let ui_end_date = datetime(2026-06-22);
+
+getVPPEventMetrics_test('', ui_start_date, ui_end_date)
+| mv-expand data
+| extend event_end_time = todatetime(data.dispatch_time)
+| where event_end_time >= ui_start_date and event_end_time <= ui_end_date
+| summarize 
+    events_in_range = count(),
+    earliest_event = min(event_end_time),
+    latest_event = max(event_end_time);
+
+// Expected: All events within specified range ✅
+
+// ============================================================================
+// TEST 10: Performance Comparison (if original still available)
+// ============================================================================
+// NOTE: Only run if original function still exists
+
+/*
+print "=== TEST 10: Performance Comparison ===";
+
+// Original function (no date filter)
+let start_old = now();
+let original_result = getVPPEventMetrics_OLD('');
+let end_old = now();
+let old_duration = datetime_diff('millisecond', end_old, start_old);
+
+// Optimized function (with date filter)
+let start_new = now();
+let new_result = getVPPEventMetrics_test('', ago(30d), now());
+let end_new = now();
+let new_duration = datetime_diff('millisecond', end_new, start_new);
+
+// Show comparison
+print 
+    original_duration_ms = old_duration,
+    optimized_duration_ms = new_duration,
+    improvement_pct = round(100.0 * (old_duration - new_duration) / old_duration, 2),
+    speedup_factor = round(todouble(old_duration) / todouble(new_duration), 2);
+
+// Expected: 80-90% improvement ✅
+*/

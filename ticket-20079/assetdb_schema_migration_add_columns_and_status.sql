@@ -5,9 +5,13 @@
 
 BEGIN;
 
--- 1. Add customer_opt_out column to tb_bas_site
+-- 1. Add customer_opt_out column to tb_bas_site with DEFAULT FALSE
+-- Note: If column was already added without default, drop and re-create
 ALTER TABLE asset.tb_bas_site
-ADD COLUMN IF NOT EXISTS customer_opt_out BOOLEAN;
+DROP COLUMN IF EXISTS customer_opt_out;
+
+ALTER TABLE asset.tb_bas_site
+ADD COLUMN customer_opt_out BOOLEAN DEFAULT FALSE;
 
 -- 2. Add target_removal_date column to tb_program_site_enrollment_status
 ALTER TABLE asset.tb_program_site_enrollment_status

@@ -1,0 +1,148 @@
+// ============================================================================
+// Function: getVppSitesTelemetryBatch
+// Purpose: Get real-time telemetry and device data for specified VPP sites
+// Author: Jagan Murikinati
+// Ticket: 20099
+// Created: 2026-06-22
+// ============================================================================
+// PERFORMANCE TARGET: < 600ms for 50 sites
+// ============================================================================
+// This function accepts an array of site IDs and returns telemetry data
+// Designed to be called AFTER getAllVppSitesList() to fetch details for
+// the paginated sites displayed to the user
+// ============================================================================
+
+.create-or-alter function getVppSitesTelemetryBatch(
+    siteIds: dynamic  // Array of site IDs like ["400012345", "400012346", ...]
+) {
+    // ============================================================================
+    // PHASE 1: VALIDATE INPUT
+    // ============================================================================
+    // Convert dynamic array to list for efficient querying
+    let site_list = toscalar(
+        print siteIds
+        | mv-expand siteId = siteIds to typeof(string)
+        | summarize make_list(siteId)
+    );
+    
+    // ============================================================================
+    // PHASE 2: GET TIMEZONE - Required for telemetry local time conversion
+    // ============================================================================
+    let goldAdtPropertySites_timezone =
+        materialize(
+            goldAdtPropertyMinMaxLatestViewV2
+            | where Id in (site_list)
+                and actionMax != 'Delete'
+                and Key == 'address.location.timeZone'
+            | summarize
+                timezone = take_anyif(valueMax, Key == 'address.location.timeZone')
+            by siteId = Id
+        )
+    ;
+    
+    // ============================================================================
+    // PHASE 3: GET TELEMETRY DATA - Latest telemetry for specified sites
+    // ============================================================================
+    let commData = silverCommDataSite
+        | where siteId in (site_list)
+        | summarize arg_max(sourceTimestamp, *) by siteId
+        | join kind=leftouter (goldAdtPropertySites_timezone | project siteId, timezone) on siteId
+        | extend timezone = coalesce(timezone, "UTC")
+        | extend localTimestamp = case(
+            timezone == "UTC", sourceTimestamp,
+            datetime_utc_to_local(sourceTimestamp, timezone)
+        )
+        | project siteId,
+                  SOC = battery_713_SoC,
+                  battery_power_w = battery_200_W,
+                  grid_energy_imported = grid_200_IncWhImp,
+                  grid_energy_exported = grid_200_IncWhExp,
+                  last_update_in_local_time = localTimestamp,
+                  inverter_status = sourceTimestamp > now() - 1h,
+                  last_updated_timestamp_utc = sourceTimestamp,
+                  timezone
+    ;
+    
+    // ============================================================================
+    // PHASE 4: GET DEVICE RELATIONSHIPS - Find connected devices
+    // ============================================================================
+    let relatedDevices =
+        materialize(
+            goldAdtAllRelationshipsLatestView
+            | where Action != 'Delete'
+                and Source in (site_list)
+                and Name in ("hasDevice","hasSystemInfo")
+            | project siteId = Source, deviceId = Target, Name
+        )
+    ;
+    
+    // ============================================================================
+    // PHASE 5: GET RATED CAPACITY - Battery inverter capacity
+    // ============================================================================
+    let rated_capacity =
+        goldAdtPropertyMinMaxLatestViewV2
+        | where Key in ('nameplateInfo.wMaxRtg','productInfo.prodSubType')
+        | join kind = inner (
+            goldAdtTwinEventsLatestV2
+            | where Action != 'Delete' and ModelId startswith "dtmi:qcells:device:"
+            | project TwinId, ModelId
+        ) on $left.Id == $right.TwinId and $left.ModelId == $right.ModelId
+        | project-away TwinId, ModelId1
+        | lookup kind = inner (relatedDevices | where Name == 'hasDevice')
+            on $left.Id == $right.deviceId
+        | summarize
+            rated_capacity = anyif(valueMax, Key == 'nameplateInfo.wMaxRtg'),
+            prodSubType = anyif(valueMax, Key == 'productInfo.prodSubType'),
+            max_timeMax = max(timeMax)
+        by siteId, deviceId = Id
+        | where prodSubType in ("HybridInverter","BatteryInverter")
+        | summarize arg_max(max_timeMax,*) by siteId
+        | project SiteId = siteId, rated_capacity, timeMax = max_timeMax
+    ;
+    
+    // ============================================================================
+    // PHASE 6: GET SYSTEM SIZE - PV system size
+    // ============================================================================
+    let system_size =
+        goldAdtPropertyMinMaxLatestViewV2
+        | where Key in ('systemSizeKw')
+        | lookup kind = inner (relatedDevices | where Name == 'hasSystemInfo')
+            on $left.Id == $right.deviceId
+        | summarize
+            (priorityModel, system_size_kw) = arg_min(
+                case(
+                    ModelId startswith "dtmi:qcells:systemInfo:defaultSystemInfo", 1,
+                    ModelId startswith "dtmi:qcells:systemInfo:pvSystemInfo", 2,
+                    999
+                ), valueMax)
+        by siteId
+    ;
+    
+    // ============================================================================
+    // PHASE 7: COMBINE ALL DATA - Join telemetry with device data
+    // ============================================================================
+    let result_data = commData
+        | join kind=leftouter (rated_capacity) on $left.siteId == $right.SiteId
+        | join kind=leftouter (system_size) on siteId
+        | project
+            site_number = siteId,
+            SOC,
+            battery_power_w,
+            rated_capacity,
+            system_size_kw,
+            inverter_status,
+            grid_energy_imported,
+            grid_energy_exported,
+            lifetime_production = '-',  // Placeholder - not currently available
+            last_update_in_local_time,
+            last_updated_timestamp_utc,
+            timezone
+    ;
+    
+    // ============================================================================
+    // FINAL RESPONSE - Return telemetry data array
+    // ============================================================================
+    result_data
+    | summarize data = make_list(pack_all())
+    | project data
+}
