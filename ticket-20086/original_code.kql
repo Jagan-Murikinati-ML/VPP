@@ -133,7 +133,7 @@
         ) on $left.siteId == $right.siteTwinId
         | distinct siteId
         | extend has_battery = 'Yes';
-    //Step 12: Fetch Oem data and Utility Information (Combined for performance)
+    //Step 12: Fetch Oem data and Utility Information
     let oem_and_utility_data = goldAdtPropertyMinMaxLatestViewV2
             | where actionMax != 'Delete'
             and ModelId startswith "dtmi:qcells:site:site"
@@ -158,7 +158,16 @@
             | project siteId = Id, type0_oem_name, type0_oem_siteId, type1_oem_name, type1_oem_siteId,
                      account_number, utility_company, utility_service_account_number
         ; //oem_and_utility_data
-    // Step 13: Combine all data from the different sources
+    //Step 13: Fetch Program Data - Get program enrollments
+    let program_data = GetLatestProgramSiteInfo
+        | where site_id in (siteIdsList)
+        | join kind=inner (
+            GetLatestProgramInfo 
+            | project program_id, program_name, program_type
+        ) on program_id
+        | summarize program_name = make_set(program_name) by site_id
+    ;
+    // Step 14: Combine all data from the different sources
     let result_data = site_ids_from_user
          | join kind = leftouter siteProperties on $left.site_ids == $right.siteId
          | join kind = leftouter leap_data on $left.site_ids == $right.siteId
@@ -168,6 +177,7 @@
          | join kind = leftouter tpo_registered on $left.site_ids == $right.siteId
          | join kind = leftouter installer on $left.site_ids == $right.siteId
          | join kind = leftouter oem_and_utility_data on $left.site_ids == $right.siteId
+         | join kind = leftouter program_data on $left.site_ids == $right.site_id
          | join kind = leftouter sitesWithBattery on $left.site_ids == $right.siteId
          //| join kind=leftouter rated_capacity on $left.site_ids == $right.SiteId
          | distinct site_ids,
@@ -194,6 +204,7 @@
                    APP_TPO_AccountId = case(account_number like 'APPTPO', replace(@"[^\d]", "", account_number), ""),
                    utility_company,
                    utility_service_account_number,
+                   program_name = program_name = strcat_array(coalesce(program_name, dynamic([])), ", "),
                    last_data_timestamp,
                    system_status_1h_online = iif(last_data_timestamp >= ago(1h), "online", "offline")
      ; result_data

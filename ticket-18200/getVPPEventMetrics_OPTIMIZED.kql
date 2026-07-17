@@ -94,5 +94,3 @@
     | order by program_name, event_id
     | summarize data = make_list(event_info);
 }
-
-

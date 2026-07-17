@@ -24,7 +24,6 @@
         | mv-expand siteId = siteIds to typeof(string)
         | summarize make_list(siteId)
     );
-    
     // ============================================================================
     // PHASE 2: GET TIMEZONE - Required for telemetry local time conversion
     // ============================================================================
@@ -39,7 +38,6 @@
             by siteId = Id
         )
     ;
-    
     // ============================================================================
     // PHASE 3: GET TELEMETRY DATA - Latest telemetry for specified sites
     // ============================================================================
@@ -50,7 +48,6 @@
         | mv-expand siteId = siteIds to typeof(string)
         | project siteId
     ;
-
     let telemetry_data = silverCommDataSite
         | where siteId in (site_list)
         | summarize arg_max(sourceTimestamp, *) by siteId
@@ -62,16 +59,16 @@
                   sourceTimestamp,
                   inverter_status = sourceTimestamp > now() - 1h
     ;
-
     let commData = site_list_table
         | join kind=leftouter (telemetry_data) on siteId
         | join kind=leftouter (goldAdtPropertySites_timezone | project siteId, timezone) on siteId
-        | extend timezone = coalesce(timezone, "UTC", "")
-        | extend localTimestamp = case(
-            isnotnull(sourceTimestamp) and timezone != "UTC" and timezone != "",
-                datetime_utc_to_local(sourceTimestamp, timezone),
-            sourceTimestamp
+        | extend timezone = case(
+            isnull(sourceTimestamp), "",
+            isnull(timezone), "UTC",
+            timezone
         )
+        | extend localTimestamp = case(timezone == "UTC", now(),
+                                       datetime_utc_to_local(sourceTimestamp, timezone))
         | project siteId,
                   SOC,
                   battery_power_w,
@@ -82,7 +79,6 @@
                   last_updated_timestamp_utc = sourceTimestamp,
                   timezone
     ;
-    
     // ============================================================================
     // PHASE 4: GET DEVICE RELATIONSHIPS - Find connected devices
     // ============================================================================
@@ -95,7 +91,6 @@
             | project siteId = Source, deviceId = Target, Name
         )
     ;
-    
     // ============================================================================
     // PHASE 5: GET RATED CAPACITY - Battery inverter capacity
     // ============================================================================
@@ -119,7 +114,6 @@
         | summarize arg_max(max_timeMax,*) by siteId
         | project SiteId = siteId, rated_capacity, timeMax = max_timeMax
     ;
-    
     // ============================================================================
     // PHASE 6: GET SYSTEM SIZE - PV system size
     // ============================================================================
@@ -137,7 +131,6 @@
                 ), valueMax)
         by siteId
     ;
-    
     // ============================================================================
     // PHASE 7: COMBINE ALL DATA - Join telemetry with device data
     // ============================================================================
@@ -158,7 +151,6 @@
             last_updated_timestamp_utc,
             timezone
     ;
-    
     // ============================================================================
     // FINAL RESPONSE - Return telemetry data array
     // ============================================================================

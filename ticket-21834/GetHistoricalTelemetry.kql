@@ -1,0 +1,291 @@
+// ============================================================
+// GetHistoricalTelemetry
+// Returns raw (non-rolled-up) telemetry readings for one or
+// more pieces of equipment within a requested time range.
+//
+// The maximum allowed query window is automatically capped
+// based on the Ignition ingestion rate inferred from the
+// actual timestamp gaps in the data, so the caller never has
+// to know or pass a rate explicitly.
+//
+// Inputs
+//   orgId         – GUID  (optional if orgKey supplied)
+//   orgKey        – human key, e.g. "PRIME-GROUP"  (optional)
+//   siteId        – GUID  (REQUIRED – at least one of siteId/siteKey)
+//   siteKey       – human key, e.g. "GA-10"  (optional)
+//   equipId       – GUID  (REQUIRED – at least one of equipId/equipKey)
+//   equipKey      – human key, e.g. "RPP-3-G1"  (optional)
+//   pointId       – GUID  (optional, comma-separated)
+//   pointKey      – human key  (optional, comma-separated)
+//   startDateTime – datetime  (REQUIRED)
+//   endDateTime   – datetime  (REQUIRED)
+//
+// Output shape (mirrors GetDeviceAggregation hierarchy)
+//   result → { orgId, orgKey, sites: [ { siteId, siteKey,
+//               devices: [ { equipId, equipKey, equipType,
+//                 equipMake, equipModel,
+//                 points: [ { pointId, pointKey, metricName,
+//                   metricUnit, metricScope, derivedFrom,
+//                   readings: [ { timestamp, value } ] } ] } ] } ],
+//             notFound: { sites, equipment, points } }
+//
+// On org-level failure:
+//   result → { error: "INVALID_PARAMETER | ORG_NOT_FOUND: ..." }
+// ============================================================
+.create-or-alter function with (
+    folder        = "API Functions",
+    docstring     = "Raw (non-rolled-up) historical telemetry for one org. siteId/equipId are required. The query window is validated against the inferred Ignition ingestion rate to prevent runaway result sets. Readings are grouped per point as [{timestamp,value}] arrays. notFound reports unresolved IDs/Keys."
+)
+GetHistoricalTelemetry(
+    orgId         : string   = "",
+    orgKey        : string   = "",
+    siteId        : string   = "",
+    siteKey       : string   = "",
+    equipId       : string   = "",
+    equipKey      : string   = "",
+    pointId       : string   = "",
+    pointKey      : string   = "",
+    startDateTime : datetime = datetime(null),
+    endDateTime   : datetime = datetime(null)
+)
+{
+    // ── 0. TIME RANGE ────────────────────────────────────────────────────────
+    let _end   = iff(isnull(endDateTime),   now(),         endDateTime);
+    let _start = iff(isnull(startDateTime), _end - 24h,    startDateTime);
+    let _requestedWindowSec = datetime_diff("second", _end, _start);
+
+    // ── 1. HELPER: comma-separated string → dynamic set ──────────────────────
+    let _toSet = (s: string) {
+        toscalar(
+            print _s = s
+            | mv-expand _v = split(_s, ",") to typeof(string)
+            | project _v = trim(@"\s+", _v)
+            | where isnotempty(_v)
+            | summarize make_set(_v)
+        )
+    };
+
+    // ── 2. RESOLVE: prefer Id over Key for each filter level ─────────────────
+    let _orgUseId   = isnotempty(orgId);
+    let _siteUseId  = isnotempty(siteId);
+    let _equipUseId = isnotempty(equipId);
+    let _pointUseId = isnotempty(pointId);
+
+    let _orgProvided   = isnotempty(orgId)   or isnotempty(orgKey);
+    let _siteProvided  = isnotempty(siteId)  or isnotempty(siteKey);
+    let _equipProvided = isnotempty(equipId) or isnotempty(equipKey);
+    let _pointProvided = isnotempty(pointId) or isnotempty(pointKey);
+
+    let _orgReq   = _toSet(iff(_orgUseId,   orgId,   orgKey));
+    let _siteReq  = _toSet(iff(_siteUseId,  siteId,  siteKey));
+    let _equipReq = _toSet(iff(_equipUseId, equipId, equipKey));
+    let _pointReq = _toSet(iff(_pointUseId, pointId, pointKey));
+
+    // ── 3. PROGRESSIVE FILTERING ─────────────────────────────────────────────
+    // Base table: GoldOTelDataPoints (raw, non-aggregated readings)
+    let _afterOrg = materialize(
+        GoldOTelDataPoints
+        | where not(_orgProvided)
+            or iff(_orgUseId, OrgId, OrgKey) in (_orgReq)
+    );
+    let _afterSite = _afterOrg
+        | where _siteProvided
+              and iff(_siteUseId, SiteId, SiteKey) in (_siteReq);
+    let _afterEquip = _afterSite
+        | where _equipProvided
+              and iff(_equipUseId, EquipId, EquipKey) in (_equipReq);
+    let _afterPoint = _afterEquip
+        | where not(_pointProvided)
+              or iff(_pointUseId, PointId, PointKey) in (_pointReq);
+
+    // ── 4. PARAMETER VALIDATION ──────────────────────────────────────────────
+    let _orgMissing   = not(_orgProvided);
+    let _siteMissing  = not(_siteProvided);
+    let _equipMissing = not(_equipProvided);
+    let _startMissing = isnull(startDateTime);
+    let _endMissing   = isnull(endDateTime);
+    let _orgCount     = toscalar(_afterOrg | count);
+
+    // ── 5. INFER IGNITION INGESTION RATE ─────────────────────────────────────
+    // Sample the 200 most-recent raw rows for the requested equipment and
+    // compute the median gap between consecutive timestamps per point.
+    // The smallest median across all points is the effective ingestion rate.
+    // This is used to cap the maximum allowed query window.
+    //
+    // Cap table (generous upper bounds per rate):
+    //   ≤ 2s  → 4 h   (≈ 7 200 rows / point)
+    //   ≤ 5s  → 12 h  (≈ 8 640 rows / point)
+    //   ≤ 30s → 48 h  (≈ 5 760 rows / point)
+    //   ≤ 1m  → 7 d   (≈10 080 rows / point)
+    //   > 1m  → 30 d
+    let _sampleForRate = materialize(
+        _afterPoint
+        | top 200 by metricTimeStamp desc
+    );
+    let _medianGapSec = toscalar(
+        _sampleForRate
+        | order by PointId asc, metricTimeStamp asc
+        | extend _prevTs = prev(metricTimeStamp, 1)
+        | extend _prevPt = prev(PointId, 1)
+        | where PointId == _prevPt and isnotnull(_prevTs)
+        | extend _gapSec = datetime_diff("second", metricTimeStamp, _prevTs)
+        | where _gapSec > 0
+        | summarize percentile(_gapSec, 50)
+    );
+    // Fall back to 60 s if there are too few rows to infer a rate
+    let _rateSec = iff(isnull(_medianGapSec) or _medianGapSec <= 0, 60, _medianGapSec);
+    let _maxWindowSec = case(
+        _rateSec <= 2,  4   * 3600,     // 4 h
+        _rateSec <= 5,  12  * 3600,     // 12 h
+        _rateSec <= 30, 48  * 3600,     // 48 h
+        _rateSec <= 60, 7   * 86400,    // 7 d
+        30 * 86400                      // 30 d
+    );
+    let _windowExceeded = _requestedWindowSec > _maxWindowSec;
+
+    // ── 6. COMPOSE ERROR STRING ───────────────────────────────────────────────
+    let _err = case(
+        _orgMissing,       "INVALID_PARAMETER: at least one of orgId or orgKey is required",
+        _siteMissing,      "INVALID_PARAMETER: at least one of siteId or siteKey is required",
+        _equipMissing,     "INVALID_PARAMETER: at least one of equipId or equipKey is required",
+        _startMissing,     "INVALID_PARAMETER: startDateTime is required",
+        _endMissing,       "INVALID_PARAMETER: endDateTime is required",
+        _orgCount == 0,    "ORG_NOT_FOUND: no telemetry found for the given org",
+        _windowExceeded,   strcat("WINDOW_TOO_LARGE: requested window is ", tostring(_requestedWindowSec),
+                                  "s but the inferred ingestion rate (", tostring(_rateSec),
+                                  "s) limits queries to ", tostring(_maxWindowSec), "s"),
+        ""
+    );
+    let _errorResult =
+        print result = bag_pack("error", _err)
+        | where isnotempty(_err);
+
+    // ── 7. NOT-FOUND SETS ─────────────────────────────────────────────────────
+    let _sitesNotFound  = set_difference(
+        _siteReq,
+        toscalar(_afterOrg  | summarize make_set(iff(_siteUseId,  SiteId,  SiteKey)))
+    );
+    let _equipNotFound  = set_difference(
+        _equipReq,
+        toscalar(_afterSite | summarize make_set(iff(_equipUseId, EquipId, EquipKey)))
+    );
+    let _pointsNotFound = set_difference(
+        _pointReq,
+        toscalar(_afterEquip | summarize make_set(iff(_pointUseId, PointId, PointKey)))
+    );
+
+    // ── 8. ORG KEY LOOKUP ─────────────────────────────────────────────────────
+    let _resolvedOrgKey = tostring(toscalar(
+        _afterOrg
+        | summarize arg_max(metricTimeStamp, OrgKey)
+        | project OrgKey
+    ));
+    let _resolvedOrgId = tostring(toscalar(
+        _afterOrg
+        | summarize arg_max(metricTimeStamp, OrgId)
+        | project OrgId
+    ));
+
+    // ── 9. RAW READINGS IN RANGE ──────────────────────────────────────────────
+    let _inRange = materialize(
+        _afterPoint
+        | where metricTimeStamp between (_start .. _end)
+        | where isempty(_err)   // skip heavy work if we will return an error anyway
+    );
+
+    // ── 10. POINT METADATA (latest snapshot per point in range) ──────────────
+    // Captures stable fields: unit, scope, derivedFrom, equip metadata.
+    let _pointMeta = materialize(
+        _inRange
+        | summarize arg_max(metricTimeStamp,
+            metricUnit, MetricScope, DerivedFrom,
+            EquipKey, EquipType, EquipMake, EquipModel,
+            SiteKey, PointKey, OrgKey, OrgId)
+          by SiteId, EquipId, PointId, metricName
+    );
+
+    // ── 11. RAW READINGS ARRAY per point ─────────────────────────────────────
+    // Juan's suggestion: group timestamps+values under a "readings" array
+    // rather than repeating all metadata on every timestamp row.
+    // KQL make_list does not guarantee order, so we sort before collecting.
+    let _pointReadings = materialize(
+        _inRange
+        | extend _reading = bag_pack(
+            "timestamp", metricTimeStamp,
+            "value",     toreal(metricValue)
+          )
+        | summarize readings = make_list(_reading)   // ordered by sort below
+          by SiteId, EquipId, PointId, metricName
+    );
+    // Note: KQL make_list() does not guarantee insertion order.
+    // The consumer (API layer / caller) should sort readings by timestamp
+    // if strict chronological order is required.
+
+    // ── 12. BUILD POINT OBJECTS ───────────────────────────────────────────────
+    let _pointObjects = materialize(
+        _pointMeta
+        | join kind=inner (_pointReadings)
+            on SiteId, EquipId, PointId, metricName
+        | extend _point = bag_pack(
+            "pointId",          PointId,
+            "pointKey",         PointKey,
+            "metricName",       metricName,
+            "metricUnit",       metricUnit,
+            "metricScope",      MetricScope,
+            "derivedFrom",      iff(isnull(DerivedFrom), "", tostring(DerivedFrom)),
+            "readings",         readings
+          )
+        | summarize
+            points         = make_list(_point),
+            (_, SiteKey, EquipKey, EquipType, EquipMake, EquipModel) =
+                arg_max(metricTimeStamp, SiteKey, EquipKey, EquipType, EquipMake, EquipModel)
+          by SiteId, EquipId, OrgId, OrgKey
+    );
+
+    // ── 13. BUILD DEVICE OBJECTS ──────────────────────────────────────────────
+    let _deviceObjects = materialize(
+        _pointObjects
+        | extend _device = bag_pack(
+            "equipId",    EquipId,
+            "equipKey",   EquipKey,
+            "equipType",  EquipType,
+            "equipMake",  iff(isnull(EquipMake),  "", tostring(EquipMake)),
+            "equipModel", iff(isnull(EquipModel), "", tostring(EquipModel)),
+            "points",     points
+          )
+        | summarize
+            devices       = make_list(_device),
+            (_latestTs, SiteKey) = arg_max(metricTimeStamp, SiteKey)
+          by SiteId, OrgId, OrgKey
+    );
+
+    // ── 14. BUILD SITE OBJECTS ────────────────────────────────────────────────
+    let _siteObjects = materialize(
+        _deviceObjects
+        | extend _site = bag_pack(
+            "siteId",  SiteId,
+            "siteKey", SiteKey,
+            "devices", devices
+          )
+        | summarize sites = make_list(_site)
+          by OrgId, OrgKey
+    );
+
+    // ── 15. FINAL OK RESULT ───────────────────────────────────────────────────
+    let _sitesArr = toscalar(_siteObjects | project sites);
+    let _okResult =
+        print result = bag_pack(
+            "orgId",    _resolvedOrgId,
+            "orgKey",   _resolvedOrgKey,
+            "sites",    iff(isnull(_sitesArr), dynamic([]), _sitesArr),
+            "notFound", bag_pack(
+                "sites",     _sitesNotFound,
+                "equipment", _equipNotFound,
+                "points",    _pointsNotFound
+            )
+        )
+        | where isempty(_err);
+
+    // ── 16. UNION error path and success path ─────────────────────────────────
+    union _errorResult, _okResult
+}

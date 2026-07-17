@@ -1,0 +1,110 @@
+﻿"Name","Parameters","Body","Folder","DocString"
+"GetDeviceAggregation","(orgId:string="""", siteId:string="""", siteKey:string="""", equipId:string="""", equipKey:string="""", pointId:string="""", pointKey:string="""", startDateTime:datetime=datetime(null), endDateTime:datetime=datetime(null), rollup:string=""avg"", timeWindow:string=""15m"")","{
+    let _end   = iff(isnull(endDateTime), now(), endDateTime);
+    let _start = iff(isnull(startDateTime), _end - 24h, startDateTime);
+    let _bin = case(
+        timeWindow == ""1m"",  1m,
+        timeWindow == ""5m"",  5m,
+        timeWindow == ""15m"", 15m,
+        timeWindow == ""30m"", 30m,
+        timeWindow == ""1h"",  1h,
+        timeWindow == ""1d"",  1d,
+        timeWindow == ""7d"",  7d,
+        timeWindow == ""1y"",  365d,
+        15m);
+    let _orgMissing = isempty(trim(@""\s+"", orgId));
+    let _siteUseId  = isnotempty(siteId);
+    let _equipUseId = isnotempty(equipId);
+    let _pointUseId = isnotempty(pointId);
+    let _siteProvided  = isnotempty(siteId)  or isnotempty(siteKey);
+    let _equipProvided = isnotempty(equipId) or isnotempty(equipKey);
+    let _pointProvided = isnotempty(pointId) or isnotempty(pointKey);
+    let _toSet = (s:string) { toscalar(
+        print _s = s
+        | mv-expand _v = split(_s, "","") to typeof(string)
+        | project _v = trim(@""\s+"", _v)
+        | where isnotempty(_v)
+        | summarize make_set(_v)
+    ) };
+    let _siteReq  = _toSet(iff(_siteUseId,  siteId,  siteKey));
+    let _equipReq = _toSet(iff(_equipUseId, equipId, equipKey));
+    let _pointReq = _toSet(iff(_pointUseId, pointId, pointKey));
+    let _afterOrg = materialize(
+        GoldOTelMetrics_gaugeMetricsOnly    
+        | where OrgId == orgId
+    );
+    let _afterSite = _afterOrg
+        | where not(_siteProvided) or iff(_siteUseId, SiteId, SiteKey) in (_siteReq);
+    let _afterEquip = _afterSite
+        | where not(_equipProvided) or iff(_equipUseId, EquipId, EquipKey) in (_equipReq);
+    let _afterPoint = _afterEquip
+        | where not(_pointProvided) or iff(_pointUseId, PointId, PointKey) in (_pointReq);
+    let _orgCount = toscalar(_afterOrg | count);
+    let _err = case(
+        _orgMissing,    ""INVALID_PARAMETER: orgId is required"",
+        _orgCount == 0, ""ORG_NOT_FOUND: no telemetry for the given orgId"",
+        """");
+    let _errorResult =
+        print result = bag_pack(""error"", _err)
+        | where isnotempty(_err);
+    let _siteMissing  = set_difference(_siteReq,  toscalar(_afterOrg   | summarize make_set(iff(_siteUseId,  SiteId,  SiteKey))));
+    let _equipMissing = set_difference(_equipReq, toscalar(_afterSite  | summarize make_set(iff(_equipUseId, EquipId, EquipKey))));
+    let _pointMissing = set_difference(_pointReq, toscalar(_afterEquip | summarize make_set(iff(_pointUseId, PointId, PointKey))));
+    let _orgKey = tostring(toscalar(_afterOrg | summarize arg_max(metricTimeStamp, OrgKey) | project OrgKey));
+    let _inRange = materialize(
+        _afterPoint
+        | where metricTimeStamp between (_start .. _end)
+    );
+    let _metricsByEquip =
+        _inRange
+        | summarize arg_max(metricTimeStamp, metricName, metricUnit, PointKey, PointAttributes, SiteKey, EquipKey)
+            by OrgId, SiteId, EquipId, PointId
+        | extend _attrs = bag_remove_keys(PointAttributes, dynamic([""event.time"", ""ingestion.time""]))
+        | extend _metric = bag_merge(
+            bag_pack(""name"", metricName, ""unit"", metricUnit, ""pointId"", PointId, ""pointKey"", PointKey),
+            _attrs)
+        | summarize metrics = make_list(_metric),
+                    (_latestTs, SiteKey, EquipKey) = arg_max(metricTimeStamp, SiteKey, EquipKey)
+            by OrgId, SiteId, EquipId;
+    let _pointsByEquip =
+        _inRange
+        | summarize _avg = avg(metricValue), _min = min(metricValue), _max = max(metricValue),
+                    _sum = sum(metricValue), _cnt = count()
+            by OrgId, SiteId, EquipId, metricName, _bucket = bin(metricTimeStamp, _bin)
+        | extend _val = case(
+            rollup == ""avg"",   _avg,
+            rollup == ""min"",   _min,
+            rollup == ""max"",   _max,
+            rollup == ""sum"",   _sum,
+            rollup == ""count"", toreal(_cnt),
+            _avg)
+        | summarize _byMetric = make_bag(bag_pack(metricName, _val)) by OrgId, SiteId, EquipId, _bucket
+        | order by _bucket asc
+        | extend _row = bag_merge(bag_pack(""timestamp"", _bucket), _byMetric)
+        | summarize points = make_list(_row) by OrgId, SiteId, EquipId;
+    let _equipArr = toscalar(
+        _metricsByEquip
+        | join kind=inner (_pointsByEquip) on OrgId, SiteId, EquipId
+        | extend _equip = bag_pack(
+            ""resource"", bag_pack(
+                ""kind"", ""telemetry"",
+                ""siteId"", SiteId,
+                ""siteKey"", SiteKey,
+                ""equipId"", EquipId,
+                ""equipKey"", EquipKey),
+            ""metrics"", metrics,
+            ""points"", points)
+        | summarize make_list(_equip)
+    );
+    let _okResult =
+        print result = bag_pack(
+            ""orgId"", orgId,
+            ""orgKey"", _orgKey,
+            ""equipment"", iff(isnull(_equipArr), dynamic([]), _equipArr),
+            ""notFound"", bag_pack(
+                ""sites"", _siteMissing,
+                ""equipment"", _equipMissing,
+                ""points"", _pointMissing))
+        | where isempty(_err);
+    union _errorResult, _okResult
+}","API Functions","Temporal aggregation for one org (orgId GUID, REQUIRED). Resamples telemetry into timeWindow buckets (default 15m) and rolls up via a single rollup (avg|min|max|sum|count, default avg) applied to all metrics. site/equip/point accept comma-separated Id (GUID) OR Key (human) lists; Id list wins; filters are PARTIAL (unknowns reported in notFound). Default range = last 24h. ALWAYS one result object: {error:...} only on an org-level problem (INVALID_PARAMETER / ORG_NOT_FOUND), else {orgId,orgKey,equipment:[{resource,metrics:[...incl latest PointAttributes],points:[{timestamp,<metricName>:value}]}],notFound:{sites,equipment,points}}. Supersedes GetAggregatedMetrics."

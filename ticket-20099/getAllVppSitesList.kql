@@ -96,7 +96,6 @@
         ) on program_id
         | summarize program_name = make_set(program_name) by site_id
     ;
-    
     // ============================================================================
     // PHASE 5: BUILD DATASET - Combine site properties with programs
     // ============================================================================
@@ -118,10 +117,8 @@
             accountNumber,
             program_name = coalesce(program_name, dynamic([]))
     ; 
-    
     // Total records count (before search/filters)
     let total_records_count = toscalar(all_sites_basic | count);
-    
     // ============================================================================
     // PHASE 6: GLOBAL SEARCH - Search across all text fields
     // ============================================================================
