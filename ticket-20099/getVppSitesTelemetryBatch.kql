@@ -1,31 +1,13 @@
-// ============================================================================
-// Function: getVppSitesTelemetryBatch
-// Purpose: Get real-time telemetry and device data for specified VPP sites
-// Author: Jagan Murikinati
-// Ticket: 20099
-// Created: 2026-06-22
-// ============================================================================
-// PERFORMANCE TARGET: < 600ms for 50 sites
-// ============================================================================
-// This function accepts an array of site IDs and returns telemetry data
-// Designed to be called AFTER getAllVppSitesList() to fetch details for
-// the paginated sites displayed to the user
-// ============================================================================
-
 .create-or-alter function getVppSitesTelemetryBatch(
-    siteIds: dynamic  // Array of site IDs like ["400012345", "400012346", ...]
-) {
-    // ============================================================================
-    // PHASE 1: VALIDATE INPUT
-    // ============================================================================
-    // Convert dynamic array to list for efficient querying
+    siteIds: dynamic 
+){
     let site_list = toscalar(
         print siteIds
         | mv-expand siteId = siteIds to typeof(string)
         | summarize make_list(siteId)
     );
     // ============================================================================
-    // PHASE 2: GET TIMEZONE - Required for telemetry local time conversion
+    // PHASE 2: GET TIMEZONE 
     // ============================================================================
     let goldAdtPropertySites_timezone =
         materialize(
@@ -41,8 +23,6 @@
     // ============================================================================
     // PHASE 3: GET TELEMETRY DATA - Latest telemetry for specified sites
     // ============================================================================
-    // CRITICAL: Start with site_list to ensure ALL input sites are returned
-    // even if they have no telemetry data (maintains consistency with original)
     let site_list_table =
         print siteIds
         | mv-expand siteId = siteIds to typeof(string)
@@ -63,10 +43,10 @@
         | join kind=leftouter (telemetry_data) on siteId
         | join kind=leftouter (goldAdtPropertySites_timezone | project siteId, timezone) on siteId
         | extend timezone = case(
-            isnull(sourceTimestamp), "",
-            isnull(timezone), "UTC",
-            timezone
-        )
+    isnull(sourceTimestamp), "",
+    isnull(timezone), "UTC",
+    timezone
+)
         | extend localTimestamp = case(timezone == "UTC", now(),
                                        datetime_utc_to_local(sourceTimestamp, timezone))
         | project siteId,
@@ -80,7 +60,7 @@
                   timezone
     ;
     // ============================================================================
-    // PHASE 4: GET DEVICE RELATIONSHIPS - Find connected devices
+    // PHASE 4: GET DEVICE RELATIONSHIPS 
     // ============================================================================
     let relatedDevices =
         materialize(
@@ -92,7 +72,7 @@
         )
     ;
     // ============================================================================
-    // PHASE 5: GET RATED CAPACITY - Battery inverter capacity
+    // PHASE 5: GET RATED CAPACITY
     // ============================================================================
     let rated_capacity =
         goldAdtPropertyMinMaxLatestViewV2

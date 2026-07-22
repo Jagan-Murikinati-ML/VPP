@@ -1,4 +1,3 @@
-
 .create-or-alter function getAllVppSitesList(
     inputUserId: string = "",
     page_index: int = 0,
@@ -78,7 +77,16 @@
         | summarize program_name = make_set(program_name) by site_id
     ;
     // ============================================================================
-    // PHASE 5: BUILD DATASET - Combine site properties with programs
+    // PHASE 4b: COMMUNICATION STATUS - Latest sourceTimestamp per site
+    // ============================================================================
+    let comm_status_data = materialize(
+        silverCommDataSite
+        | where siteId in (allSiteIdsList)
+        | summarize lastTimestamp = max(sourceTimestamp) by siteId
+        | project siteId, communication_status = lastTimestamp > now() - 1h
+    );
+    // ============================================================================
+    // PHASE 5: BUILD DATASET - Combine site properties with programs and comm status
     // ============================================================================
     let all_sites_basic = goldAdtPropertySites_minimal
         | project
@@ -89,6 +97,7 @@
             oemname = oem,
             accountNumber
         | join kind=leftouter (program_data) on $left.siteId == $right.site_id
+        | join kind=leftouter (comm_status_data) on siteId
         | project
             siteId,
             siteName,
@@ -96,7 +105,8 @@
             state,
             oemname,
             accountNumber,
-            program_name = coalesce(program_name, dynamic([]))
+            program_name = coalesce(program_name, dynamic([])),
+            communication_status = coalesce(communication_status, false)
     ; 
     let total_records_count = toscalar(all_sites_basic | count);
     // ============================================================================
@@ -141,13 +151,15 @@
             filter_field == "program_name" and filter_op == "contains", program_name_str contains tolower(filter_value),
             filter_field == "oem_name" and filter_op == "==", tolower(oemname) == tolower(filter_value),
             filter_field == "oem_name" and filter_op == "contains", oemname contains tolower(filter_value),
+            // NEW: communication_status filter
+            filter_field == "communication_status" and filter_op == "==", tostring(communication_status) == tolower(filter_value),
             false
         ), true)
         | summarize matched_filters = countif(filter_matches), total_filters = max(filter_count)
-            by siteId, siteName_str, zipPostalCode, state, oemname, accountNumber, program_name_str, has_filters_flag
+            by siteId, siteName_str, zipPostalCode, state, oemname, accountNumber, program_name_str, has_filters_flag, communication_status
         | where has_filters_flag == false or matched_filters == total_filters
         | extend siteName = siteName_str, program_name = todynamic(program_name_str)
-        | project siteId, siteName, zipPostalCode, state, oemname, accountNumber, program_name
+        | project siteId, siteName, zipPostalCode, state, oemname, accountNumber, program_name, communication_status
     ;
     // ============================================================================
     // PHASE 8: DYNAMIC SORTING - Sort by any field
@@ -164,6 +176,8 @@
             sort_field == "external_reference_id", tolower(accountNumber),
             sort_field == "program_name", tolower(strcat_array(program_name, ", ")),
             sort_field == "oem_name", tolower(oemname),
+            // NEW: communication_status sort (true=online sorts after false=offline in asc)
+            sort_field == "communication_status", tostring(communication_status),
             sort_key_padded
         )
         | extend sort_key_desc = sort_key_asc
@@ -196,6 +210,7 @@
             external_reference_id = accountNumber,
             program_name,
             oem_name = oemname,
+            communication_status,
             sort_rank
         | order by sort_rank asc
     ;

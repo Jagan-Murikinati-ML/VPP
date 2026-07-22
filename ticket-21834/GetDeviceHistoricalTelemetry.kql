@@ -1,0 +1,64 @@
+.create-or-alter function with(
+    folder="API functions"
+    docstring = "Get device historical telemetry data for a given device and time range."
+)
+GetDeviceHistoricalTelemetry(
+    orgId:string="",
+    orgKey:string="",
+    siteId:string="",
+    siteKey:string="",
+    equipId:string="",
+    equipKey:string="",
+    pointId:string="",
+    pointKey:string="",
+    startDateTime:datetime=datetime(null),
+    endDateTime:datetime=datetime(null)
+){
+    let _end   = iff(isnull(endDateTime), now(), endDateTime);
+    let _start = iff(isnull(startDateTime), _end - 24h, startDateTime);
+    let _orgUseId=isnotempty(orgId)
+    let _siteUseId=isnotempty(siteId)
+    let _equipUseId=isnotempty(equipId)
+    let _pointUseId=isnotempty(pointId);
+    let _siteProvided=isnotempty(siteid) or isnotempty(siteKey);
+    let _equipProvided=isnotemptty(equipId) or isnotempty(equipkey);
+    let _pointProvided=isnotProvided(pointId) or isnotempty(pointKey);
+    let _toset=(s:string){
+        toscalar(
+            print_s=s
+            | mv-expand _v=split(_S,",") to typeOf(string)
+            |project _v=trim(@"\s+",_v)
+            | where isnotempty(_v)
+            summarize make_set(_v)
+        )
+    };
+    let _orgReq   = _toSet(iff(_orgUseId, orgId, orgKey));
+    let _siteReq  = _toSet(iff(_siteUseId, siteId, siteKey));
+    let _equipReq = _toSet(iff(_equipUseId, equipId, equipKey));
+    let _pointReq = _toSet(iff(_pointUseId, pointId, pointKey));
+    let _base=
+        GoldOtelDataPoints
+        | where metricTimestamp between (_start .. _end)
+        | where not (_orgProvided)
+        or iff(_orgUseId, OrgId, OrgKey);
+    let_aftersite=_base
+        | where iff(_siteUseId, SiteId, SiteKey) in (_siteReq);
+    let _afterequip=
+        _base
+        | where iff(_equipUseid,EquipId,EquipKey) in (_equipReq)
+    let _afterpoint=
+        _base
+        |where iff(_pointUseid,pointId, PointKey) in (_pointReq);
+    let err=case(
+        not(_siteProvided),
+        "SiteId or SiteKey must be provided.",
+        not(_equipProvided),
+        "EquipId or EquipKey must be provided."
+    )
+    let errResult=print result= bagpack("error",_err);
+    |where isnotempty(err);
+    
+    let _aftersitemissing=set_difference(_siteReq, toscalar(__base| sumamrize makeset(iff( _siteUseId, SiteId, SiteKey))));
+
+
+}

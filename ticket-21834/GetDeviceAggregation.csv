@@ -1,7 +1,7 @@
 ﻿"Name","Parameters","Body","Folder","DocString"
 "GetDeviceAggregation","(orgId:string="""", siteId:string="""", siteKey:string="""", equipId:string="""", equipKey:string="""", pointId:string="""", pointKey:string="""", startDateTime:datetime=datetime(null), endDateTime:datetime=datetime(null), rollup:string=""avg"", timeWindow:string=""15m"")","{
-    let _end   = iff(isnull(endDateTime), now(), endDateTime);
-    let _start = iff(isnull(startDateTime), _end - 24h, startDateTime);
+    let _end   = iff(isnull(endDateTime), now(), endDateTime); //if endtime is not provided, use current time, ledhantey provided entime 
+    let _start = iff(isnull(startDateTime), _end - 24h, startDateTime);// same starttime provide cheyakapothey lastday current_time-24hours ledhantey current timestamp 
     let _bin = case(
         timeWindow == ""1m"",  1m,
         timeWindow == ""5m"",  5m,
