@@ -1,0 +1,33 @@
+
+let ptodates = 
+    goldAdtPropertyMinMaxLatestViewV2
+    | where Key == 'assetRegistrationInfo.ptoDate'
+        and Id in (goldAdtTwinEventsLatestV2 | where Action != 'Delete' and ModelId contains "site:site")
+    | extend PTODate = todatetime(valueMin)
+    | where PTODate >= datetime(2026-01-01)
+;
+let onboarding =
+    silverCommDataSite
+    | where siteId in (ptodates | project Id)
+    | summarize onboardingDate = min(sourceTimestamp) by siteId, oem
+    | summarize arg_min(onboardingDate, oem) by siteId;   // earliest-reporting oem wins per site
+onboarding
+| join kind=inner (ptodates | project siteId = Id, PTODate) on siteId
+| extend daysToBackfill = datetime_diff('day', onboardingDate, PTODate)
+| where daysToBackfill >= 1
+| join kind=leftouter (oemMetadata | project oem, reportingIntervalMinutes, marginOfError) on oem
+| project
+    gap_record_id = new_guid(),
+    site_id = siteId,
+    asset_id = siteId,                 // site-level; no per-asset split at onboarding time
+    oem,
+    gap_start_time = PTODate,
+    gap_end_time = onboardingDate,
+    gap_minutes = datetime_diff('minute', onboardingDate, PTODate),
+    detected_at = now(),
+    reporting_interval_minutes = reportingIntervalMinutes,
+    margin_of_error = marginOfError
+| join kind=leftanti (
+    silverCommDataSiteGaps
+    | project site_id, asset_id, oem, gap_start_time, gap_end_time
+) on site_id, asset_id, oem, gap_start_time, gap_end_time

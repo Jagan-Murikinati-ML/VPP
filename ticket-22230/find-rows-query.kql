@@ -1,0 +1,18 @@
+//total records need backfill from jan1st 
+let ptodates = 
+    goldAdtPropertyMinMaxLatestViewV2
+    | where Key == 'assetRegistrationInfo.ptoDate'
+        and Id in (goldAdtTwinEventsLatestV2 | where Action != 'Delete' and ModelId contains "site:site")
+    | extend PTODate = todatetime(valueMin)
+    | where PTODate >= datetime(2026-01-01)
+;
+silverCommDataSite
+| where siteId in (ptodates|project Id)
+| summarize onboardingDate = min(sourceTimestamp) by siteId
+| join kind=fullouter (ptodates | project siteId = Id, PTODate) on siteId
+| extend hasOnboarded = isnotnull(onboardingDate)
+| extend daysToBackfill = datetime_diff('day',coalesce(onboardingDate,now()), PTODate)
+| where daysToBackfill >= 1
+| where hasOnboarded == true
+| project siteId, PTODate, onboardingDate, daysToBackfill
+| order by daysToBackfill desc

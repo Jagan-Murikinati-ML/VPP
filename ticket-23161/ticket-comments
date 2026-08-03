@@ -1,0 +1,45 @@
+Kai Xu
+commented Friday
+
+@Jagan.Murikinati @Juan Culebro
+[We need to have the final data done by 8/7 Friday]
+
+Similar to work
+21441
+[Urgent] Sprint 4.0 LEAP 15 min Monthly Data Preparation for June DSGS
+Closed
+
+After some customer optout and some adjustments, 7757 sites need the entire month of July data. (See file "Sites need entire July Interval data")
+
+281 sites enrolled in DSGS as new customers, in July. So we need the entire month of June and July. We do not need April data for these new sites. (See file "Sites need both June and July interval data")
+
+Overall, we have 8038 sites (7757 + 281), this is the entire VPP fleet participated in June DSGS event.
+
+After you get the raw data, please use the scripts @Juan Culebro and the LEAP threshold file I attached, to conduct the data post processing work similar to
+22143
+Sprint 6.2 LEAP Data Post Processing for Abnormal Energy Discharge
+Closed
+
+Important Note
+After you got the raw 15-min interval data, do NOT process the Part 1, Part 2 and Part 3 data post processing activities drafted in
+21441
+[Urgent] Sprint 4.0 LEAP 15 min Monthly Data Preparation for June DSGS
+Closed
+. Instead, use the new methods apply to all sites, all june/july, and all intervals by using
+22143
+Sprint 6.2 LEAP Data Post Processing for Abnormal Energy Discharge
+Closed
+
+Thank you!
+
+
+juan pablo comment:- 
+
+
+Juan Culebro
+commented Friday
+
+
+@Jagan.Murikinati
+kql script has been attached to ticket in .txt file.
+The site list at the top has been updated with the site list and limits Kai attached to this ticket (LEAP Threshold for spikes_all sites_July version). If other updates need to be made, that will have to be done manually.
