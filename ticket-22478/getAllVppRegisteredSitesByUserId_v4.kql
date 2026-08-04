@@ -1,12 +1,4 @@
-.create-or-alter function getAllVppRegisteredSitesByUserId_v4(
-    inputUserId:string,
-    inputStateCode:string="noStateInput",
-    inputUtilities:string="noUtilityInput",
-    page:int=0,
-    page_size:int=10,
-    includeBattCap:bool=false
-)
-{
+.create-or-alter function with (folder = "API Functions", docstring = "Get smaller set of VPP site data based on userid, state, and utility", skipvalidation = "true") getAllVppRegisteredSitesByUserId_v3(inputUserId:string, inputStateCode:string="noStateInput", inputUtilities:string="noUtilityInput", page:int=0, page_size:int=10, includeBattCap: bool = false){
     let utilitiesList = split(inputUtilities,',');
     let site_ids_from_user = toscalar(getCurrentUserSiteMapping(inputUserId) | project list_site_ids);
     let vppSites =
@@ -125,3 +117,5 @@
     | extend metadata = pagination_metadata, status = status
     | project metadata, data, status
 }
+
+
