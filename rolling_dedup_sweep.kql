@@ -1,0 +1,16 @@
+// Scheduled fleet-wide keep-latest-ingestion dedup safety net (catches dups the merge slice never revisits).
+// Silver-only (gold take_any-dedups); mirroring stays OFF; idempotent. Edit the inlined ago()/hash() to set
+// the trailing window and chunking (a `.delete` predicate can't reference outer lets); run K=0..7 to bound memory.
+.execute database script with (ContinueOnErrors=false)
+<|
+.alter table silverCommDataSite policy mirroring @'{"IsEnabled": false}';
+.delete table silverCommDataSite records
+  <|
+    let win = silverCommDataSite
+        | where sourceTimestamp >= ago(30d)
+        | where hash(siteId, 8) == 0
+        | extend _it = ingestion_time();
+    let keep = win | summarize maxit = max(_it) by tenantId, siteId, assetId, oem, sourceTimestamp;
+    win
+    | join kind=inner hint.strategy=broadcast keep on tenantId, siteId, assetId, oem, sourceTimestamp
+    | where _it < maxit;

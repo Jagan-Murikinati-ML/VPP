@@ -1,0 +1,51 @@
+{
+ "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+ "contentVersion": "1.0.0.0",
+ "parameters": {
+  "EventHouse": {
+   "type": "string"
+  }
+ },
+ "variables": {},
+ "resources": [
+  {
+   "name": "TeslaTotNativeIncReconcile",
+   "type": "pipelines",
+   "apiVersion": "2018-06-01",
+   "properties": {
+    "description": "Nightly downstream reconcile of the Tesla skip-one anchor-skip Inc over-credit (ADR-0016). Recomputes battery_200 Inc from committed silver over a trailing 72h (3-day) window via recomputeBatteryIncFromDenseTot and keep-latest rewrites the two Inc fields. Schedule in a quiet nightly slot OFF the per-OEM merge cadence. Solax excluded (separate under-credit defect).",
+    "activities": [
+     {
+      "name": "Reconcile Tot-Native Inc",
+      "description": "",
+      "type": "KustoQueryLanguage",
+      "dependsOn": [],
+      "policy": {
+       "timeout": "0.12:00:00",
+       "retry": 0,
+       "retryIntervalInSeconds": 30,
+       "secureOutput": false,
+       "secureInput": false
+      },
+      "typeProperties": {
+       "command": ".execute database script with (ContinueOnErrors=false)\n<|\n.set-or-replace loadReconcileBounds <| print spanStart=bin(ago(72h), 1h), spanEnd=now();\n.drop table loadTotNativeIncReconcileDiff ifexists;\n.create table loadTotNativeIncReconcileDiff (siteId: string, assetId: string, oem: string, sourceTimestamp: datetime, corrected_IncWhExp: real, corrected_IncWhImp: real);\n.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(0, s, e);\n.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(1, s, e);\n.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(2, s, e);\n.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(3, s, e);\n.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(4, s, e);\n.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(5, s, e);\n.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(6, s, e);\n.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(7, s, e);\n.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(8, s, e);\n.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(9, s, e);\n.set-or-append totNativeIncReconcileSnapshot <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); let snap=toscalar(loadReconcileBounds | project spanEnd); silverCommDataSite | where oem == 'tesla' and sourceTimestamp between (s .. e) | extend _it=ingestion_time() | lookup kind=inner (loadTotNativeIncReconcileDiff | project siteId, assetId, oem, sourceTimestamp) on siteId, assetId, oem, sourceTimestamp | summarize arg_max(_it, battery_200_IncWhExp, battery_200_IncWhImp) by siteId, assetId, oem, sourceTimestamp | project siteId, assetId, oem, sourceTimestamp, old_IncWhExp=battery_200_IncWhExp, old_IncWhImp=battery_200_IncWhImp, snapshot_at=snap;\n.set-or-append silverCommDataSite <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); let latestKeys=silverCommDataSite | where oem == 'tesla' and sourceTimestamp between (s .. e) | extend _it=ingestion_time() | lookup kind=inner (loadTotNativeIncReconcileDiff | project siteId, assetId, oem, sourceTimestamp) on siteId, assetId, oem, sourceTimestamp | summarize mx=max(_it) by siteId, assetId, oem, sourceTimestamp; silverCommDataSite | where oem == 'tesla' and sourceTimestamp between (s .. e) | extend _it=ingestion_time() | lookup kind=inner latestKeys on siteId, assetId, oem, sourceTimestamp | where _it==mx | lookup kind=inner loadTotNativeIncReconcileDiff on siteId, assetId, oem, sourceTimestamp | extend battery_200_IncWhExp=corrected_IncWhExp, battery_200_IncWhImp=corrected_IncWhImp | project-away _it, mx, corrected_IncWhExp, corrected_IncWhImp;\n.alter table silverCommDataSite policy mirroring @'{\"IsEnabled\": false}';\n.delete table silverCommDataSite records <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); let keys=loadTotNativeIncReconcileDiff | project siteId, assetId, oem, sourceTimestamp; let win=silverCommDataSite | where oem == 'tesla' and sourceTimestamp between (s .. e) | extend _it=ingestion_time(); let mx=win | join kind=inner hint.strategy=broadcast keys on siteId, assetId, oem, sourceTimestamp | summarize maxit=max(_it) by siteId, assetId, oem, sourceTimestamp; win | join kind=inner hint.strategy=broadcast mx on siteId, assetId, oem, sourceTimestamp | where _it < maxit;\n.delete materialized-view goldCommDataSite records <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); goldCommDataSite | where sourceTimestamp between (s .. e) | where siteId in ((loadTotNativeIncReconcileDiff | summarize by siteId)) | join kind=inner hint.strategy=broadcast (loadTotNativeIncReconcileDiff | summarize by siteId, sourceTimestamp) on siteId, sourceTimestamp;",
+       "commandTimeout": "01:00:00"
+      },
+      "linkedService": {
+       "name": "EventHouse",
+       "properties": {
+        "annotations": [],
+        "type": "KustoDatabase",
+        "typeProperties": {
+         "workspaceId": "09c5e73c-a820-4100-aef5-d774ac0395f6",
+         "endpoint": "https://trd-nf0f4d4d8f02q8g15n.z1.kusto.fabric.microsoft.com",
+         "database": "[parameters('EventHouse')]"
+        }
+       }
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

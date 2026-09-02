@@ -1,0 +1,51 @@
+.execute database script with (ContinueOnErrors=false)
+<|
+// TotNativeIncReconcile — nightly downstream correction of the skip-one anchor-skip over-credit (ADR-0016).
+// Recomputes battery_200_IncWhExp/Imp for TESLA over a trailing 72h (3-day) window from committed silver via
+// recomputeBatteryIncFromDenseTot (carry-max; mirrors getUnifiedTelemetryCore), then keep-latest rewrites ONLY the
+// two Inc fields. Window widened from the original 48h design to 72h per the explicit ask ("check the data for
+// the last 3 days"); at nightly cadence this gives a 48h overlap between successive runs (up from 24h) — safe,
+// since the pass is idempotent (keep-latest by ingestion_time converges re-run over re-run). Scope is tesla only:
+// solax is also Tot-native battery but live prod shows it UNDER-crediting (fleet median SigmaInc/DeltaTot ~0.59,
+// opposite of tesla's ~1.15 over-credit) — a separate defect excluded here pending its own investigation; do NOT
+// widen the oem filter without that sign-off. Totals (*_TotWh*) are never rewritten. Corrupt-Tot sites
+// (is_corrupt_tot_site) are skipped UNLESS this row is more than 240 minutes from the nearest disqualifying Tot
+// drop at that site (getTotNativeIncReconcileBucketDiff) — otherwise one drop anywhere in the 72h window blocked
+// every other row in it, even ones nowhere near the drop (found while verifying the 25744 CA VPP heal). Full
+// site-wide corrupt-Tot exclusion is still tracked as its own separate corrupt-Tot integrity defect.
+//
+// Per-bucket recompute+filter logic lives in getTotNativeIncReconcileBucketDiff (Library/Backfill) so this
+// script only wires up bucketing/snapshot/append/delete — see that function for the actual diff logic.
+//
+// Preconditions: recomputeBatteryIncFromDenseTot and getTotNativeIncReconcileBucketDiff deployed on the target
+// cluster; schedule in a quiet slot OFF the per-OEM merge cadence (heavy getUnifiedTelemetryCore-class scans must
+// not co-run — the 2026-07-07 memory incident). K=10 buckets bound per-call recompute memory to ~fleet/8 sites
+// over the window.
+// NOTE: header stays AFTER `.execute` — Kusto admin-command parser requires the first non-whitespace
+// char of the whole command to be '.'; a leading // fails with "Admin commands must have a dot (.)
+// character as their first non-whitespace character".
+// 1. Freeze the window so now() cannot drift across statements.
+.set-or-replace loadReconcileBounds <| print spanStart=bin(ago(72h), 1h), spanEnd=now();
+// 2. Small diff staging: only the changed keys + their two corrected Inc values.
+.drop table loadTotNativeIncReconcileDiff ifexists;
+.create table loadTotNativeIncReconcileDiff (siteId: string, assetId: string, oem: string, sourceTimestamp: datetime, corrected_IncWhExp: real, corrected_IncWhImp: real);
+// 3. Per-bucket diff via getTotNativeIncReconcileBucketDiff (buckets the in-window tesla cohort by hash(siteId)%10).
+.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(0, s, e);
+.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(1, s, e);
+.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(2, s, e);
+.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(3, s, e);
+.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(4, s, e);
+.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(5, s, e);
+.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(6, s, e);
+.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(7, s, e);
+.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(8, s, e);
+.set-or-append loadTotNativeIncReconcileDiff <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); getTotNativeIncReconcileBucketDiff(9, s, e);
+// 4. Rolling ~14d snapshot of the PRE-correction Inc for the changed keys (audit/rollback). Retention set on the table.
+.set-or-append totNativeIncReconcileSnapshot <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); let snap=toscalar(loadReconcileBounds | project spanEnd); silverCommDataSite | where oem == 'tesla' and sourceTimestamp between (s .. e) | extend _it=ingestion_time() | lookup kind=inner (loadTotNativeIncReconcileDiff | project siteId, assetId, oem, sourceTimestamp) on siteId, assetId, oem, sourceTimestamp | summarize arg_max(_it, battery_200_IncWhExp, battery_200_IncWhImp) by siteId, assetId, oem, sourceTimestamp | project siteId, assetId, oem, sourceTimestamp, old_IncWhExp=battery_200_IncWhExp, old_IncWhImp=battery_200_IncWhImp, snapshot_at=snap;
+// 5. Append corrected full rows: latest-ingestion copy per changed key, two Inc fields overwritten in place.
+.set-or-append silverCommDataSite <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); let latestKeys=silverCommDataSite | where oem == 'tesla' and sourceTimestamp between (s .. e) | extend _it=ingestion_time() | lookup kind=inner (loadTotNativeIncReconcileDiff | project siteId, assetId, oem, sourceTimestamp) on siteId, assetId, oem, sourceTimestamp | summarize mx=max(_it) by siteId, assetId, oem, sourceTimestamp; silverCommDataSite | where oem == 'tesla' and sourceTimestamp between (s .. e) | extend _it=ingestion_time() | lookup kind=inner latestKeys on siteId, assetId, oem, sourceTimestamp | where _it==mx | lookup kind=inner loadTotNativeIncReconcileDiff on siteId, assetId, oem, sourceTimestamp | extend battery_200_IncWhExp=corrected_IncWhExp, battery_200_IncWhImp=corrected_IncWhImp | project-away _it, mx, corrected_IncWhExp, corrected_IncWhImp;
+// 6. Mirroring OFF, then keep-latest delete: drop the older-ingestion (pre-correction) copies of the changed keys.
+.alter table silverCommDataSite policy mirroring @'{"IsEnabled": false}';
+.delete table silverCommDataSite records <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); let keys=loadTotNativeIncReconcileDiff | project siteId, assetId, oem, sourceTimestamp; let win=silverCommDataSite | where oem == 'tesla' and sourceTimestamp between (s .. e) | extend _it=ingestion_time(); let mx=win | join kind=inner hint.strategy=broadcast keys on siteId, assetId, oem, sourceTimestamp | summarize maxit=max(_it) by siteId, assetId, oem, sourceTimestamp; win | join kind=inner hint.strategy=broadcast mx on siteId, assetId, oem, sourceTimestamp | where _it < maxit;
+// 7. Drop affected gold MV records so it re-materializes from the corrected silver (goldCommDataSite dedups by siteId,sourceTimestamp).
+.delete materialized-view goldCommDataSite records <| let s=toscalar(loadReconcileBounds | project spanStart); let e=toscalar(loadReconcileBounds | project spanEnd); goldCommDataSite | where sourceTimestamp between (s .. e) | where siteId in ((loadTotNativeIncReconcileDiff | summarize by siteId)) | join kind=inner hint.strategy=broadcast (loadTotNativeIncReconcileDiff | summarize by siteId, sourceTimestamp) on siteId, sourceTimestamp;
