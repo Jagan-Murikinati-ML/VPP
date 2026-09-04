@@ -1,0 +1,163 @@
+// these 3 events are the 3/21 events
+// let events = dynamic(['7fc30abb-b804-4e58-8971-679ac763674b']); 
+// let events = dynamic(['dd5a71ad-baec-4b07-b0f0-b6906eb63086']); 
+let events = dynamic(['351eab83-6177-4621-b03d-86205af82dd5']); 
+let eventData = 
+    silver_stream_dispatch_events
+    | where event_id in (events)
+    | summarize arg_max(created_at_utc, program_name, sites, event_start_time, event_end_time, event_status, dispatch_strategy, dispatch_payload) by event_id
+    // | extend sites = array_slice(sites,0,2100)//array_slice(sites,2101,-1) //use for when event is too big to output in one
+    | extend num_of_sites = array_length(sites)
+    | mv-expand sites
+    | extend sites = tostring(sites)
+    // | where sites in ((dynamic(['400019930','400019809','400013499','400000837'])))
+;
+// eventData | summarize count_distinct(event_id) by sites;
+// eventData | project event_id, created_at_utc, program_name, event_start_time, event_end_time, dispatch_strategy, dispatch_payload, num_of_sites, sites;
+// let eventDataSites = eventData | project event_id, sites, event_start_time, event_end_time;
+let eventResults = 
+    silver_site_dispatch_results
+    | where event_id in (events)
+    | extend normalized_dispatch_time = bin(dispatch_time, 15m)
+    // | where site_id in ((dynamic(['400019930','400019809','400013499','400000837'])))
+    | extend dispatch_siteId = site_id, dispatch_event_id = event_id
+    | project-away site_id, event_id, energy_charged, energy_discharged, energy_exported, energy_imported, battery_power, power
+    | summarize arg_max(dispatch_time,*) by dispatch_siteId, normalized_dispatch_time
+;
+// eventResults | where dispatch_siteId in (testsites);
+// eventResults | summarize count_distinct(command) by dispatch_siteId, normalized_dispatch_time, dispatch_event_id; // check used pre summarize arg_max
+let assetReg = 
+    database('EventHouse').getStackedValuesForRelatedModels(inputSiteIds = 
+        // dynamic(['400019930','400019809','400013499'])
+        toscalar( eventData | summarize make_list(sites))
+        ,inputShortModel='dtmi:qcells:device:battery', inputKeys=dynamic(['productInfo.prodCode','nameplateInfo.whRtg','couplingType','communicationType','backupType','nameplateInfo.usableWhRtg']))
+    | extend isBatteryInfo = Key != "productInfo.prodCode", thebags = bag_pack(Key, Value)
+    | summarize 
+        productCode = maxif(Value, Key == "productInfo.prodCode")
+        ,productWhRtg = todouble(maxif(Value, Key == "nameplateInfo.usableWhRtg"))
+        ,batteryInfo = make_bag_if(thebags, isBatteryInfo)
+        by siteId, relatedId
+    | extend deviceInfo = bag_pack(
+        relatedId, bag_pack(
+            "productCode", productCode
+            ,"batteryInfo", batteryInfo
+        )
+    )
+    | summarize 
+        all_battery_info = make_list(deviceInfo)
+        ,(maxUsableRating, battery_product_code_highest_usableWhRtg) = arg_max(productWhRtg,productCode)
+        ,totalWhRtg = sum(productWhRtg)
+        ,battery_prod_codes = make_set(productCode)
+    by siteId
+    | project siteId
+        ,battery_info = bag_pack(
+            'totalUsableWhRtg', totalWhRtg
+            ,'maxUsableRating', maxUsableRating
+            ,'allBatteryCodes', battery_prod_codes
+            ,'individualBatteryInfo', all_battery_info
+        )
+    | join kind=fullouter (
+        database('EventHouse').getStackedValuesForSites(inputSiteIds=toscalar( eventData | summarize make_list(sites)), inputKeys=dynamic(['oemInfo.0.oemName','oemInfo.1.oemName']))
+        | order by siteId, Key
+        | serialize 
+        | extend rn = row_number()
+        | summarize (rn, oemName)=arg_min(rn, Value) by siteId
+        | project-away rn
+    ) on siteId
+    | project-away siteId1
+;
+// assetReg;
+let unnormalizedTelemetry = 
+    database('EventHouse').table('silverCommDataSite')
+    | where siteId in (eventData | project sites)
+        and sourceTimestamp between (datetime_add('hour', -2, toscalar(eventData|summarize min(event_start_time))) .. datetime_add('hour', 2,toscalar(eventData|summarize max(event_end_time))))
+    | project telem_siteId = siteId, telem_oem = oem, telemetryTimestamp = sourceTimestamp, normalized_telemetry = bin(sourceTimestamp,15m)
+        ,battery_713_SoC, battery_200_W, battery_200_IncWhExp, battery_200_IncWhImp, pv_200_W, pv_200_IncWhExp, grid_200_W, grid_200_IncWhExp, grid_200_IncWhImp
+    // | summarize 
+    //     (last_telem_timestamp, battery_713_SoC) = arg_max(telemetryTimestamp, battery_713_SoC)
+    //     ,battery_200_W = avg(battery_200_W), battery_200_IncWhExp = sum(battery_200_IncWhExp), battery_200_IncWhImp = sum(battery_200_IncWhImp)
+    //     ,pv_200_W = avg(pv_200_W), pv_200_IncWhExp = sum(pv_200_IncWhExp)
+    //     ,grid_200_W = avg(grid_200_W), grid_200_IncWhExp = sum(grid_200_IncWhExp), grid_200_IncWhImp = sum(grid_200_IncWhImp)
+    // by telem_siteId, telem_oem, normalized_telemetry
+;
+let telemetry = 
+    unnormalizedTelemetry
+    | extend OOC_battery_200_IncWhExp = battery_200_IncWhExp < 0 or
+        battery_200_IncWhExp > (toscalar(unnormalizedTelemetry|summarize avg(battery_200_IncWhExp) | project avg_battery_200_IncWhExp) 
+            + 3 *toscalar(unnormalizedTelemetry|summarize stdev(battery_200_IncWhExp) | project stdev_battery_200_IncWhExp))
+    | extend OOC_battery_200_IncWhExp = battery_200_IncWhExp !between (0..7500)
+// ; telemetry | project telem_siteId, telemetryTimestamp, normalized_telemetry, battery_200_IncWhExp, OOC_battery_200_IncWhExp, grid_200_IncWhExp | order by battery_200_IncWhExp desc; print filtervalue = (toscalar(unnormalizedTelemetry|summarize avg(battery_200_IncWhExp) | project avg_battery_200_IncWhExp)     + 3 *toscalar(unnormalizedTelemetry|summarize stdev(battery_200_IncWhExp) | project stdev_battery_200_IncWhExp)), avg = toscalar(unnormalizedTelemetry|summarize avg(battery_200_IncWhExp) | project avg_battery_200_IncWhExp) , stddev = toscalar(unnormalizedTelemetry|summarize stdev(battery_200_IncWhExp) | project stdev_battery_200_IncWhExp)
+// 
+    | extend battery_200_IncWhExp = iff(OOC_battery_200_IncWhExp,real(null),battery_200_IncWhExp)
+        ,battery_200_IncWhImp     = iff(OOC_battery_200_IncWhExp,real(null),battery_200_IncWhImp)
+        ,battery_200_W            = iff(OOC_battery_200_IncWhExp,real(null),battery_200_W)
+        ,pv_200_IncWhExp          = iff(OOC_battery_200_IncWhExp,real(null),pv_200_IncWhExp)
+        ,pv_200_W                 = iff(OOC_battery_200_IncWhExp,real(null),pv_200_W)
+        ,grid_200_IncWhExp        = iff(OOC_battery_200_IncWhExp,real(null),grid_200_IncWhExp)
+        ,grid_200_IncWhImp        = iff(OOC_battery_200_IncWhExp,real(null),grid_200_IncWhImp)
+        ,grid_200_W               = iff(OOC_battery_200_IncWhExp,real(null),grid_200_W)
+// ; telemetry
+    | summarize 
+        last_telem_timestamp = max(telemetryTimestamp)
+        ,battery_200_W = avg(battery_200_W), battery_200_IncWhExp = sum(battery_200_IncWhExp), battery_200_IncWhImp = sum(battery_200_IncWhImp)
+        ,pv_200_W = avg(pv_200_W), pv_200_IncWhExp = sum(pv_200_IncWhExp)
+        ,grid_200_W = avg(grid_200_W), grid_200_IncWhExp = sum(grid_200_IncWhExp), grid_200_IncWhImp = sum(grid_200_IncWhImp)
+    by telem_siteId, telem_oem, normalized_telemetry
+    | join kind=leftouter (
+        unnormalizedTelemetry
+        | where isnotempty(battery_713_SoC)
+        | summarize (last_SoC_timestamp, battery_713_SoC) = arg_max(telemetryTimestamp, battery_713_SoC)
+        by telem_siteId, normalized_telemetry
+    ) on telem_siteId, normalized_telemetry
+    | project-away telem_siteId1, normalized_telemetry1
+    | order by telem_siteId, normalized_telemetry
+    | extend last_SoC_timestamp = coalesce(last_SoC_timestamp, iif(next(telem_siteId) == telem_siteId, next(last_SoC_timestamp),datetime(null)))
+        ,battery_713_SoC = coalesce(battery_713_SoC, iif(next(telem_siteId) == telem_siteId, next(battery_713_SoC),real(null)))
+;
+// telemetry | where normalized_telemetry between (datetime(2025-07-30 02:00:00.0000000) ..datetime(2025-07-30 04:00:00.0000000) ) | summarize sum(battery_200_IncWhExp), sum(battery_200_IncWhImp) by telem_siteId, normalized_telemetry;
+// telemetry | where telem_siteId == 400010450; unnormalizedTelemetry| where telem_siteId ==400010450
+// telemetry | summarize count_distinct(telemetryTimestamp) by telem_siteId, normalized_telemetry;
+// unnormalizedTelemetry | where telem_siteId in (testsites) | order by telem_siteId, telemetryTimestamp asc;
+// telemetry | where telem_siteId in (testsites) | order by telem_siteId, normalized_telemetry asc;
+let missingTelem = 
+    database('EventHouse').table('silverCommDataSite')
+    | where siteId in (eventData | project sites) and not( siteId in (telemetry | project telem_siteId))
+    | summarize (lastest_telemetry_timestamp, missing_telem_oem) = arg_max(sourceTimestamp, oem) by missing_telem_site = siteId
+    | join kind=leftouter (eventData | summarize max(event_end_time) by sites) on $left.missing_telem_site == $right.sites
+    | project-away sites
+;
+// missingTelem;
+eventResults
+| join kind = fullouter (telemetry) on $left.dispatch_siteId == $right.telem_siteId and $left.normalized_dispatch_time == $right.normalized_telemetry
+| extend sites = coalesce(dispatch_siteId, telem_siteId), running_normalized_timestamp = coalesce(normalized_dispatch_time,normalized_telemetry)
+| project-reorder sites,running_normalized_timestamp,*
+| join kind = fullouter (missingTelem) on $left.sites == $right.missing_telem_site
+| extend sites = coalesce(sites, missing_telem_site), running_normalized_timestamp = coalesce(running_normalized_timestamp,max_event_end_time)
+| join kind = rightouter (eventData) on sites
+| extend sites = coalesce(sites1, sites), oem = coalesce(missing_telem_oem, telem_oem)
+| project-away sites1
+| join kind = leftouter (assetReg) on $left.sites == $right.siteId
+| project-away siteId
+// | where sites in ('400000837','400018676','400002127','400011810') | order by sites, running_normalized_timestamp | project-reorder sites,battery_info,running_normalized_timestamp,event_id, program_name, event_start_time, event_end_time,*
+| extend running_normalized_timestamp = coalesce(running_normalized_timestamp, event_end_time)
+| where running_normalized_timestamp between (datetime_add('hour', -2, event_start_time) .. datetime_add('hour', 2,event_end_time))
+| extend duringEvent = running_normalized_timestamp between (event_start_time .. datetime_add('minute', -1,event_end_time)) 
+| order by sites asc, running_normalized_timestamp asc
+| project siteId = sites
+    ,battery_info
+    ,oemName
+    ,normalized_timeStamp = running_normalized_timestamp
+    ,event_id ,event_start_time, event_end_time, duringEvent, program_name, num_of_sites
+    ,dispatch_siteId, command, normalized_dispatch_time, dispatch_time, response
+    ,telemetry_oem = oem
+    ,normalized_telemetry, last_telem_timestamp, last_SoC_timestamp
+    ,battery_713_SoC
+    ,battery_200_W
+    ,battery_200_IncWhExp
+    ,battery_200_IncWhImp
+    ,pv_200_W
+    ,pv_200_IncWhExp
+    ,grid_200_W
+    ,grid_200_IncWhExp
+    ,grid_200_IncWhImp
+| summarize batteryDischargeDuringEvent = sumif(battery_200_IncWhExp,duringEvent),exportDuringEvent = sumif(grid_200_IncWhExp,duringEvent), sites = count_distinct(siteId) by event_id, oemName | order by oemName asc
