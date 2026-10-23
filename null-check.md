@@ -210,24 +210,36 @@ What the Asset Registry events carry, and how that lines up with the tables. Sou
 
 ### Fields that arrive with no column
 
-Fields on Created and Updated events that the mapping does not store. Delete events are left out; they carry `triggeredBy` as audit information only.
+Fields on Created and Updated events that the mapping does not store, with the NULL rate a column for each would have today. Delete events are left out; they carry `triggeredBy` as audit information only.
 
-| model | event type | field | events carrying | of | % | with a value |
+**How the NULL rate is calculated.** A table row is one entity (a site, a battery, an inverter) in its current state, not one event, so the rate is per entity. Live entities are those whose last event in the window is not a Delete. An entity counts as populated if any of its Created or Updated events in the window carried a real value (not null, not an empty string). Would-be NULL % is 100 minus that share. This assumes an update that does not mention a field leaves an earlier value in place. Source: `vppmetadata-rds/scripts/asset-eventhub-entity-coverage.sql`.
+
+#### No column anywhere in the database
+
+| model | field | events carrying | live entities | entities with a value | would-be NULL % | distinct values |
 | --- | --- | --- | --- | --- | --- | --- |
-| acCombiner;1 | DeviceCreated | `triggeredBy` | 3 | 4 | 75.0% | 3 |
-| battery;1 | DeviceCreated | `productInfo.prodSubType` | 1 | 597 | 0.2% | 1 |
-| battery;1 | DeviceCreated | `nameplateInfo.wMaxRtg` | 1 | 597 | 0.2% | 1 |
-| battery;1 | DeviceCreated | `nameplateInfo.totalBatteryWHRtg` | 1 | 597 | 0.2% | 1 |
-| microInverter;1 | DeviceCreated | `connectedModule.serialNum` | 15 | 15 | 100.0% | 15 |
-| microInverter;1 | DeviceCreated | `warrantyDt` | 15 | 15 | 100.0% | 15 |
-| microInverter;1 | DeviceCreated | `connectedModule.productInfo.prodMfr` | 15 | 15 | 100.0% | 15 |
-| microInverter;1 | DeviceCreated | `connectedModule.productInfo.prodName` | 15 | 15 | 100.0% | 15 |
-| microInverter;1 | DeviceCreated | `connectedModule.powerClass` | 12 | 15 | 80.0% | 12 |
-| microInverter;1 | DeviceCreated | `triggeredBy` | 6 | 15 | 40.0% | 6 |
-| site;1 | SiteUpdated | `isVppRegistered` | 717 | 746 | 96.1% | 717 |
+| battery;1 | `nameplateInfo.totalBatteryWHRtg` | 1 | 591 | 1 | 99.8% | 1 |
+| battery;1 | `nameplateInfo.wMaxRtg` | 1 | 591 | 1 | 99.8% | 1 |
+| battery;1 | `productInfo.prodSubType` | 1 | 591 | 1 | 99.8% | 1 |
+| site;1 | `isVppRegistered` | 717 | 770 | 123 | 84.0% | 2 |
+
+`isVppRegistered` is the one that matters. 717 update events carried it, but they come from only 123 of the 770 live sites (about 6 updates per site), so a column for it would be 84.0% NULL, not the 3.9% that counting update events suggests (717 of 746 carried it). It has two distinct values; the earlier report lists its JSON type as boolean. It is never on a Created event, so a new site has no value until its first update. The three `battery;1` fields each appear on a single battery of 591 (99.8% NULL).
+
+#### Column already exists, but the mapping does not read the field
+
+| model | field | existing column | events carrying | live entities | entities with a value | would-be NULL % | column NULL % today (whole table) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| acCombiner;1 | `triggeredBy` | hardware_ac_combiners.triggered_by | 3 | 4 | 1 | 75.0% | 100.0% |
+| microInverter;1 | `connectedModule.powerClass` | hardware_inverters.connected_module_power_class | 12 | 7 | 4 | 42.9% | 99.7% |
+| microInverter;1 | `connectedModule.productInfo.prodMfr` | hardware_inverters.connected_module_manufacturer | 15 | 7 | 7 | 0.0% | 99.7% |
+| microInverter;1 | `connectedModule.productInfo.prodName` | hardware_inverters.connected_module_name | 15 | 7 | 7 | 0.0% | 99.7% |
+| microInverter;1 | `connectedModule.serialNum` | hardware_inverters.connected_module_serial_number | 15 | 7 | 7 | 0.0% | 99.7% |
+| microInverter;1 | `triggeredBy` | hardware_inverters.triggered_by | 6 | 7 | 2 | 71.4% | 100.0% |
+| microInverter;1 | `warrantyDt` | hardware_inverters.warranty_date | 15 | 7 | 7 | 0.0% | 99.7% |
+
+The two NULL rates differ because the `hardware_inverters` table also holds the 595 or so rows from `inverter;1` events, which never carry these fields, so the whole-table rate is diluted. The 7 live `microInverter;1` entities carried `connectedModule.serialNum`, `prodMfr`, `prodName` and `warrantyDt` on all of them, yet only 2 `hardware_inverters` rows hold `connected_module_*` values. That suggests the stored data does not reflect these events; confirm with the mapping owner whether the deployed ingester differs from the committed code. The `acCombiner;1` figure rests on only 4 live entities.
 
 - **`siteAggregator;1` has no table.** 3 Created and 2 Deleted events (the 5 no-table events) are recorded in `asset_status` only.
-- **Some of these fields already have a column that is never filled.** `hardware_ac_combiners.triggered_by` and `hardware_inverters.triggered_by` exist and are all NULL; the `hardware_inverters` columns `connected_module_*` and `warranty_date` are 99.7% NULL. The `microInverter;1` and `acCombiner;1` events carry matching fields (above), but the committed mapping has no entry for them. Two `hardware_inverters` rows do hold `connected_module_*` values, so the deployed ingester may differ from the committed code; confirm with the mapping owner.
 - **Fields that appeared in the earlier all-time report but not in this window:** `utilityName`, `partnerOrgId`, `utilityAccountNumber`, `couplingType` on inverters and others did not appear in any event here.
 
 ### Mapped fields that arrive empty
