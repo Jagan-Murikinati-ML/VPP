@@ -1,6 +1,6 @@
 # AssetMaster NULL percentage report (vppopsdb, dev)
 
-NULL percentage for every column of every AssetMaster table in `vppopsdb` (schema `asset`), for the ES team. It complements [asset-data-quality-report.md](asset-data-quality-report.md), which covers the payload layer and the all-time column layer.
+NULL percentage for every column of every AssetMaster table in `vppopsdb` (schema `asset`). It complements [asset-data-quality-report.md](asset-data-quality-report.md), which covers the payload layer and the all-time column layer.
 
 ## Scope and method
 
@@ -170,16 +170,6 @@ These columns are mostly empty strings rather than NULL, so they look populated 
 | hardware_panels | serial_number | 2915 | 7 | 2900 | 0.3% |
 | customer_information | access_notes | 597 | 8 | 581 | 1.3% |
 
-## Observations
-
-- **`site_details`: one group of rows is missing the same fields.** Address, `site_name`, `account_number`, `latitude`, `longitude`, `time_zone`, `installation_status` and `asset_attributes` are NULL in 122 to 125 of 772 rows (about 16%). The near-identical counts suggest the same rows are incomplete in every one of those columns. This matches the earlier report's explanation (rows created by `SiteUpdated` events without the matching Create), but this run did not check it row by row.
-- **`installer_information`: 56 to 57 of 645 rows are empty apart from keys.** `company`, name, address, phone and `common_info` are NULL on 56 rows each (8.7%), and `country` and `full_address` on 57. `account_id` and `account_name` are NULL on 594 rows (92.1%).
-- **`customer_information`: 7 of 597 rows have no address.** Street, city, state, postal code, country and full address are all NULL on the same 7 rows.
-- **`hardware_panels.serial_number` looks populated to a NULL check but is not.** Only 7 rows are NULL, but 2,900 of 2,915 are empty strings, so 0.3% hold a value. The same applies to `customer_information.access_notes` (581 of 597 empty).
-- **No blank `asset_identifier` in the window.** Every table with this column has 0 NULL and 0 blank values. The earlier all-time report found blank values in `asset_status` and `hardware_panels`.
-- **`asset_status`: 10 rows have no `entity_type`, `last_event_type` or `model`** (0.1%).
-- **`hardware_backup_interfaces` has no rows,** so its columns cannot be assessed until a `backupInterface` event arrives.
-
 ## EventHub payload check
 
 What the Asset Registry events carry, and how that lines up with the tables. Source: the ingester's copy of each hub event in `asset.event_ledger.raw_event`, partition 0, enqueued 2026-10-20 to 2026-10-22 UTC.
@@ -237,90 +227,11 @@ Fields on Created and Updated events that the mapping does not store, with the N
 | microInverter;1 | `triggeredBy` | hardware_inverters.triggered_by | 6 | 7 | 2 | 71.4% | 100.0% |
 | microInverter;1 | `warrantyDt` | hardware_inverters.warranty_date | 15 | 7 | 7 | 0.0% | 99.7% |
 
-The two NULL rates differ because the `hardware_inverters` table also holds the 595 or so rows from `inverter;1` events, which never carry these fields, so the whole-table rate is diluted. The 7 live `microInverter;1` entities carried `connectedModule.serialNum`, `prodMfr`, `prodName` and `warrantyDt` on all of them, yet only 2 `hardware_inverters` rows hold `connected_module_*` values. That suggests the stored data does not reflect these events; confirm with the mapping owner whether the deployed ingester differs from the committed code. The `acCombiner;1` figure rests on only 4 live entities.
+The whole-table rate is higher because `hardware_inverters` also holds about 595 rows from `inverter;1` events, which never carry these fields. Only 2 `hardware_inverters` rows hold `connected_module_*` values although 7 live `microInverter;1` entities carried them, so the stored data does not reflect these events; confirm with the mapping owner whether the deployed ingester differs from the committed code. The `acCombiner;1` figure rests on only 4 live entities.
 
 - **`siteAggregator;1` has no table.** 3 Created and 2 Deleted events (the 5 no-table events) are recorded in `asset_status` only.
 - **Fields that appeared in the earlier all-time report but not in this window:** `utilityName`, `partnerOrgId`, `utilityAccountNumber`, `couplingType` on inverters and others did not appear in any event here.
 
-### Mapped fields that arrive empty
-
-These fields are sent, but with no usable value, which is what produces blank or NULL columns.
-
-| model | event type | field | target | events carrying | empty string | empty object | with a value |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| installer;1 | UserCreated | `accessNotes` | installer_information.access_notes | 58 | 0 | 58 | 0 |
-| pvArray;1 | DeviceCreated | `serialNum` | hardware_panels.serial_number | 2959 | 2947 | 0 | 12 |
-| site;1 | SiteCreated | `assetRegistrationInfo.assetAttributes` | site_details.asset_attributes | 651 | 0 | 651 | 0 |
-| site;1 | SiteCreated | `assetRegistrationInfo.assetDocuments` | document_links (container) | 59 | 0 | 59 | 0 |
-| site;1 | SiteCreated | `assetRegistrationInfo.assetDocuments[]` | document_links.document_url | 592 | 6 | 0 | 586 |
-| site;1 | SiteUpdated | `assetRegistrationInfo.assetAttributes` | site_details.asset_attributes | 30 | 0 | 30 | 0 |
-| site;1 | SiteUpdated | `assetRegistrationInfo.assetDocuments` | document_links (container) | 9 | 0 | 9 | 0 |
-
-### Mapped fields that are sent on few events
-
-Mapped fields carried by fewer than 95% of Created events. This is the main reason the "almost always NULL" and "inconsistent" columns above are empty: the field is rarely in the event.
-
-| model | field | target | events carrying | of | % |
-| --- | --- | --- | --- | --- | --- |
-| battery;1 | `triggeredBy` | hardware_batteries.triggered_by | 5 | 597 | 0.8% |
-| battery;1 | `warrantyDt` | hardware_batteries.warranty_date | 7 | 597 | 1.2% |
-| battery;1 | `emsSerialNumber` | hardware_batteries.ems_serial_number | 7 | 597 | 1.2% |
-| battery;1 | `fwVersion` | hardware_batteries.fw_version | 7 | 597 | 1.2% |
-| batteryPack;1 | `triggeredBy` | hardware_batteries.triggered_by | 10 | 12 | 83.3% |
-| installer;1 | `contact.accountId` | installer_information.account_id | 54 | 645 | 8.4% |
-| installer;1 | `contact.accountName` | installer_information.account_name | 54 | 645 | 8.4% |
-| installer;1 | `accessNotes` | installer_information.access_notes | 58 | 645 | 9.0% |
-| installer;1 | `contact.mobilePhone` | installer_information.phone | 587 | 645 | 91.0% |
-| installer;1 | `firstName` | installer_information.first_name | 587 | 645 | 91.0% |
-| installer;1 | `lastName` | installer_information.last_name | 587 | 645 | 91.0% |
-| installer;1 | `contact.company` | installer_information.company | 587 | 645 | 91.0% |
-| installer;1 | `address.fullAddress` | installer_information.full_address | 587 | 645 | 91.0% |
-| installer;1 | `address.country` | installer_information.country | 587 | 645 | 91.0% |
-| installer;1 | `address.city` | installer_information.city | 587 | 645 | 91.0% |
-| installer;1 | `address.zipPostalCode` | installer_information.postal_code | 587 | 645 | 91.0% |
-| installer;1 | `address.streetName` | installer_information.street1 | 587 | 645 | 91.0% |
-| installer;1 | `address.stateProvince` | installer_information.state | 587 | 645 | 91.0% |
-| oAndMContract;1 | `warrantyDetails.newRoofGuaranteeTermYears` | contract_details.new_roof_guarantee_term_years | 2 | 587 | 0.3% |
-| oAndMContract;1 | `powerPlanAgreement` | contract_details.power_plan_agreement | 11 | 587 | 1.9% |
-| oAndMContract;1 | `performanceDetails.annualDegradationRate` | contract_details.annual_degradation_rate | 11 | 587 | 1.9% |
-| site;1 | `configurationType` | site_details.configuration_type | 3 | 651 | 0.5% |
-| site;1 | `installationCompleteDate` | site_details.installation_complete_date | 3 | 651 | 0.5% |
-| site;1 | `triggeredBy` | site_details.triggered_by | 3 | 651 | 0.5% |
-| site;1 | `address.location.country` | site_details.country | 592 | 651 | 90.9% |
-| site;1 | `assetRegistrationInfo.purchaseDate` | site_details.purchase_date | 593 | 651 | 91.1% |
-| site;1 | `assetRegistrationInfo.ptoDate` | site_details.pto_date | 593 | 651 | 91.1% |
-
-### Why `site_details` has rows without an address
-
-On `site;1`, `SiteCreated` events carry the address on 100% of events (651 of 651, with `siteName` on 646 and `accountNumber` on 651). `SiteUpdated` events carry it on 4% (30 of 746); most (717 of 746) carry only `isVppRegistered`. A row that was first written by a `SiteUpdated` event therefore has no address, site name or account number, which matches the 122 to 125 incomplete `site_details` rows above. This is consistent with the data but was not matched event by event.
-
-### Columns that no event fed in this window
-
-The mapping has an entry for each of these, but no event of any type carried the source field in the window. That is why the columns are all NULL (or, for `hardware_backup_interfaces`, why the table is empty).
-
-| model | table | column | source field | model seen in window |
-| --- | --- | --- | --- | --- |
-| backupInterface;1 | hardware_backup_interfaces | firmware_version | `fwVersion` | no event |
-| backupInterface;1 | hardware_backup_interfaces | serial_number | `serialNum` | no event |
-| backupInterface;1 | hardware_backup_interfaces | product_manufacturer | `productInfo.prodMfr` | no event |
-| backupInterface;1 | hardware_backup_interfaces | product_code | `productInfo.prodCode` | no event |
-| backupInterface;1 | hardware_backup_interfaces | product_name | `productInfo.prodName` | no event |
-| backupInterface;1 | hardware_backup_interfaces | product_type | `productInfo.prodType` | no event |
-| homeowner;1 | customer_information | access_notes | `accessNotes` | yes |
-| site;1 | site_details | display_name | `assetRegistrationInfo.displayName` | yes |
-| site;1 | site_details | contact_email | `email` | yes |
-| site;1 | site_details | simulation_job_id | `simulationJobId` | yes |
-
-One mismatch to confirm with the mapping owner: `customer_information.access_notes` is empty-string on 581 of 597 rows, but no `homeowner;1` event carried `accessNotes` in the window, so the empty strings are not coming from this window's payloads.
-
-### Fields that only arrive on Updated events
-
-Mapped fields seen on Updated events but on no Created event. They stay NULL until an update arrives, which explains columns that are almost always NULL.
-
-| model | field | target | Updated events carrying | of |
-| --- | --- | --- | --- | --- |
-| inverter;1 | `fwVersion` | hardware_inverters.fw_version | 1 | 14 |
-| oAndMContract;1 | `fund` | contract_details.fund | 3 | 16 |
 
 ## NULL percentage per column, all tables
 
